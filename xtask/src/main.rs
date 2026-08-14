@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MODULE_INFO: &str = r#"{
+const MODULE_INFO_TEMPLATE: &str = r#"{
   "Name": "Code Synthesizer",
-  "Version": "0.1.0",
+  "Version": "__VERSION__",
   "Factory Info": {
     "Vendor": "Code Synthesizer",
     "URL": "",
@@ -17,7 +17,7 @@ const MODULE_INFO: &str = r#"{
       "Category": "Audio Module Class",
       "Name": "Code Synthesizer",
       "Vendor": "Code Synthesizer",
-      "Version": "0.1.0",
+      "Version": "__VERSION__",
       "SDKVersion": "VST 3.8.0",
       "Sub Categories": ["Instrument", "Synth"]
     }
@@ -82,7 +82,8 @@ fn bundle(release: bool) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&binary_dir)?;
     fs::create_dir_all(&resources)?;
     fs::copy(source, binary_dir.join("Code Synthesizer.vst3"))?;
-    fs::write(resources.join("moduleinfo.json"), MODULE_INFO)?;
+    let module_info = MODULE_INFO_TEMPLATE.replace("__VERSION__", env!("CARGO_PKG_VERSION"));
+    fs::write(resources.join("moduleinfo.json"), module_info)?;
     println!("Bundled {}", bundle.display());
     Ok(())
 }

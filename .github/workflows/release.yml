@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - Cargo.toml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version change
+        id: version
+        shell: pwsh
+        run: |
+          function Get-CargoVersion([string]$Manifest) {
+            $workspace = [regex]::Match($Manifest, '(?ms)^\[workspace\.package\]\s*(.*?)(?=^\[|\z)')
+            if ($workspace.Success) {
+              $match = [regex]::Match($workspace.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
+              if ($match.Success) { return $match.Groups[1].Value }
+            }
+            $package = [regex]::Match($Manifest, '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)')
+            if ($package.Success) {
+              $match = [regex]::Match($package.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
+              if ($match.Success) { return $match.Groups[1].Value }
+            }
+            return $null
+          }
+
+          $currentVersion = Get-CargoVersion (Get-Content -LiteralPath Cargo.toml -Raw)
+          if (-not $currentVersion) { throw 'Cargo.toml version was not found' }
+
+          $before = '${{ github.event.before }}'
+          $changed = $true
+          if ($before -and $before -notmatch '^0+$') {
+            $previousLines = & git show "${before}:Cargo.toml"
+            if ($LASTEXITCODE -ne 0) { throw "Could not read Cargo.toml at $before" }
+            $previousVersion = Get-CargoVersion ($previousLines -join "`n")
+            if (-not $previousVersion) { throw 'Previous Cargo.toml version was not found' }
+            $changed = $previousVersion -ne $currentVersion
+            Write-Host "Version: $previousVersion -> $currentVersion"
+          }
+
+          "changed=$($changed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "version=$currentVersion" >> $env:GITHUB_OUTPUT
+          "tag=v$currentVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Node.js
+        if: steps.version.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Rust
+        if: steps.version.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Install UI dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: npm ci --prefix ui
+
+      - name: Verify
+        if: steps.version.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build VST3 bundle
+        if: steps.version.outputs.changed == 'true'
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Package release asset
+        if: steps.version.outputs.changed == 'true'
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $asset = "target\bundled\code-synthesizer-v$version-windows-x64.zip"
+          Compress-Archive -LiteralPath 'target\bundled\Code Synthesizer.vst3' -DestinationPath $asset -Force
+          "asset=$asset" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $tag = '${{ steps.version.outputs.tag }}'
+          $asset = '${{ steps.package.outputs.asset }}'
+          $arguments = @(
+            $tag,
+            $asset,
+            '--target', $env:GITHUB_SHA,
+            '--title', "Code Synthesizer v$version",
+            '--generate-notes'
+          )
+          if ($version.Contains('-')) { $arguments += '--prerelease' }
+          & gh release create @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,4 +1,7 @@
-# Code Synthesizer
+<div align="center">
+<h1 style="font-size: 50px">Code Synthesizer</h1>
+<img src="images/image.png" width="80%" />
+</div>
 
 数式ベースの独自 DSL で音を定義し、編集内容を演奏中に反映できる Windows x86_64 向け Rust 製 VST3 シンセサイザーです。
 
@@ -13,6 +16,14 @@ README で定義していた最初の MVP は実装済みです。
 - phase lock 付き live 波形、プリセット、プレビュー鍵盤
 - `p_*` ユーザーパラメータ、配置可能な knob / slider / toggle、VST3 automation
 - ソース、パラメータ値、Play レイアウト、画面モードを含む plugin state 保存・復元
+
+## ギャラリー
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: center;">
+<img src="images/image.png" />
+<img src="images/image2.png" />
+<img src="images/image3.png" />
+<img src="images/image4.png" />
+</div>
 
 ## 必要環境
 
@@ -64,6 +75,12 @@ Copy-Item -Recurse -Force "target\bundled\Code Synthesizer.vst3" $vst3Dir
 
 その後、DAW で VST3 を再スキャンし、Instrument トラックへ `Code Synthesizer` を追加してください。
 
+## Version と Release
+
+version はルート `Cargo.toml` の `[workspace.package]` にある `version` だけを更新します。この値が全 crate、VST3 metadata、UI のタイトルと見出しに自動反映されます。
+
+`main` または `master` へ push した際、GitHub Actions が直前の `Cargo.toml` と version を比較します。version が変わった場合だけ全テストと release buildを実行し、`v{version}` tag、GitHub Release、Windows x64 VST3 zipを生成します。通常のコード変更や、version以外の `Cargo.toml` 変更ではReleaseは作成されません。
+
 ## 使い方
 
 プラグイン画面の Editor モードで DSL を編集すると、260 ms の debounce 後に自動コンパイルされます。成功したプログラムだけが Audio block 境界で DSP へ渡されるため、編集中に構文エラーがあっても直前の正常な音は継続します。Monaco には DSL 補完、snippet、hover、引数ヒント、コンパイラ marker、候補名の quick fix が入っています。
@@ -106,27 +123,27 @@ p_mix = param(0.5, 0, 1, 0.01)
 
 主要入力:
 
-| 名前 | 内容 |
-| --- | --- |
-| `t` | Note On からの秒数 |
-| `l` | Note Off からの秒数。押下中は `0` |
-| `s` | Velocity `0..1` |
-| `freq` / `note` / `ch` | 周波数、MIDI note、MIDI channel |
-| `bend` / `bend_st` | Pitch Bend `-1..1`、半音換算値 |
-| `mw` / `vol` / `midi_pan` / `mexpr` | CC 1 / 7 / 10 / 11 |
-| `sustain` | CC 64 の状態 |
-| `pressure` / `poly_pressure` | Channel / Poly Pressure |
-| `program` / `cc(n)` | Program Change、任意 CC `0..127` |
-| `sr` | Sample rate |
-| `tempo` / `beat` / `bar` / `ppq` / `playing` | DAW transport |
-| `voice` / `rand` | Voice index、voice ごとの乱数 `-1..1` |
+| 名前                                         | 内容                                  |
+| -------------------------------------------- | ------------------------------------- |
+| `t`                                          | Note On からの秒数                    |
+| `l`                                          | Note Off からの秒数。押下中は `0`     |
+| `s`                                          | Velocity `0..1`                       |
+| `freq` / `note` / `ch`                       | 周波数、MIDI note、MIDI channel       |
+| `bend` / `bend_st`                           | Pitch Bend `-1..1`、半音換算値        |
+| `mw` / `vol` / `midi_pan` / `mexpr`          | CC 1 / 7 / 10 / 11                    |
+| `sustain`                                    | CC 64 の状態                          |
+| `pressure` / `poly_pressure`                 | Channel / Poly Pressure               |
+| `program` / `cc(n)`                          | Program Change、任意 CC `0..127`      |
+| `sr`                                         | Sample rate                           |
+| `tempo` / `beat` / `bar` / `ppq` / `playing` | DAW transport                         |
+| `voice` / `rand`                             | Voice index、voice ごとの乱数 `-1..1` |
 
 出力:
 
-| 名前 | 内容 |
-| --- | --- |
-| `wave` | Voice のモノラル波形。必須 |
-| `pan` | Voice pan `-1..1`。省略時 `0` |
+| 名前      | 内容                                     |
+| --------- | ---------------------------------------- |
+| `wave`    | Voice のモノラル波形。必須               |
+| `pan`     | Voice pan `-1..1`。省略時 `0`            |
 | `l_limit` | Note Off 後に voice を終了する秒数。必須 |
 
 定数は `TAU`、`PI`、`E`、`PHI`、演算子は `+ - * / % ^` を使用できます。
