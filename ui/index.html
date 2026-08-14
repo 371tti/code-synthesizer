@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Code Synthesizer ver 0.1.0</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div id="boot-status" role="status">Code Synthesizer ver 0.1.0 を読み込み中…</div>
+    <div id="app" data-mode="editor">
+      <header class="app-head">
+        <div class="identity">
+          <h1>Code Synthesizer ver 0.1.0</h1>
+          <div class="engine-badges">
+            <span id="sample-rate-badge">-- Hz</span><i>·</i>
+            <span id="voice-badge">0 voices</span><i>·</i>
+            <span>VST3</span><i>·</i><span>poly-safe</span>
+          </div>
+        </div>
+        <div class="head-actions">
+          <div class="mode-switch" role="tablist" aria-label="View mode">
+            <button id="editor-mode" class="mode-button active" data-mode="editor" role="tab">Editor</button>
+            <button id="play-mode" class="mode-button" data-mode="play" role="tab">Play</button>
+          </div>
+          <div id="status" class="compile-status pending">開始中…</div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section id="editor-panel" class="panel editor-card">
+          <div class="section-head editor-head">
+            <div>
+              <h2>Expression</h2>
+              <span class="hint">Synth DSL</span>
+            </div>
+            <div class="tool-row">
+              <button id="editor-guide-button" class="text-button">Guide</button>
+              <button id="compile-button" class="text-button">Compile</button>
+              <button id="preview-button" class="text-button primary">Preview</button>
+            </div>
+          </div>
+          <div id="editor" aria-label="Code Synthesizer expression editor"></div>
+          <div id="diagnostic" class="editor-foot" role="status">
+            <span id="diagnostic-message">エディターを読み込み中…</span>
+            <span class="hint">Live completion · Ctrl+Enter preview</span>
+          </div>
+        </section>
+
+        <section id="play-panel" class="panel play-card">
+          <div class="section-head">
+            <div>
+              <h2>Performance</h2>
+              <span class="hint">p_* user parameters</span>
+            </div>
+            <div class="tool-row">
+              <button id="parameter-guide-button" class="text-button">Guide</button>
+              <button id="arrange-button" class="text-button">Arrange</button>
+              <button id="reset-parameters" class="text-button">Reset all</button>
+            </div>
+          </div>
+          <div id="control-stage" class="control-stage">
+            <div id="empty-controls" class="empty-controls">
+              <strong>No performance controls</strong>
+              <span>Editor mode で p_* を宣言してください:</span>
+              <code>p_tone = param(0.5, 0, 1, 0.01)</code>
+            </div>
+          </div>
+          <div class="play-foot">
+            <span id="arrange-hint">Guide: p_name = param(default, min, max, step)</span>
+            <span id="parameter-count">0 parameters</span>
+          </div>
+        </section>
+
+        <aside class="side-stack">
+          <section class="panel wave-card">
+            <div class="section-head">
+              <div><h2>Wave</h2><span id="scope-mode" class="hint">compiled preview</span></div>
+              <span id="scope-note" class="hint">C4</span>
+            </div>
+            <div class="monitor"><canvas id="scope"></canvas></div>
+            <div class="meter-row">
+              <span>OUT</span><div class="meter"><i id="output-meter"></i></div><output id="peak-value">0.00</output>
+            </div>
+          </section>
+          <section class="panel preset-card">
+            <div class="section-head"><h2>Preset</h2><span class="hint">Factory</span></div>
+            <div class="preset-row">
+              <label>Program<select id="preset"></select></label>
+              <button id="load-preset" class="text-button">Load</button>
+            </div>
+          </section>
+          <details class="panel reference-card">
+            <summary>DSL reference</summary>
+            <div class="reference-copy">
+              <p><b>Inputs</b> <code>t l s freq note ch bend mw vol pressure sr tempo beat ppq rand cc(n)</code></p>
+              <p><b>Outputs</b> <code>wave pan l_limit</code></p>
+              <p><b>Oscillators</b> <code>saw(freq,t) square(freq,t,duty) triangle(freq,t) noise()</code></p>
+              <p><b>Control</b> <code>p_name = param(default, min, max, step)</code> · Play → Guide for layout and automation details.</p>
+            </div>
+          </details>
+        </aside>
+      </main>
+
+      <section class="panel keyboard-section">
+        <div class="section-head keyboard-head">
+          <div><h2>Keyboard</h2><span class="hint">Computer keys: Z–M / Q–U</span></div>
+          <div class="tool-row keyboard-tools">
+            <output id="midi-input-indicator" class="midi-input-indicator" aria-live="polite">MIDI IN —</output>
+            <button id="octave-down" class="text-button" title="Octave down">− Oct</button>
+            <span id="keyboard-octave" class="hint">C4</span>
+            <button id="octave-up" class="text-button" title="Octave up">+ Oct</button>
+            <label class="velocity-control" title="Keyboard velocity">Vel <input id="keyboard-velocity" type="range" min="1" max="127" value="115" /><output id="velocity-value">91%</output></label>
+            <button id="sustain-button" class="text-button">Sustain</button>
+            <button id="panic-button" class="text-button">Panic</button>
+          </div>
+        </div>
+        <div class="keyboard-scroll"><div id="keyboard" class="keyboard"></div></div>
+      </section>
+    </div>
+
+    <div id="context-menu" class="context-menu" role="menu" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+    <div id="preset-confirm" class="guide-modal confirm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="preset-confirm-title" hidden>
+      <article class="guide-card confirm-card">
+        <header class="section-head">
+          <div><h2 id="preset-confirm-title">Load Preset?</h2><span class="hint">Unsaved editor changes</span></div>
+        </header>
+        <div class="guide-copy confirm-copy">
+          <p>編集中のコードはプリセットの内容で上書きされます。この変更は元に戻せません。</p>
+          <p>読み込むプリセット: <strong id="preset-confirm-name">—</strong></p>
+          <div class="confirm-actions">
+            <button id="cancel-preset-load" type="button" class="text-button">Keep editing</button>
+            <button id="confirm-preset-load" type="button" class="text-button primary">Load preset</button>
+          </div>
+        </div>
+      </article>
+    </div>
+    <div id="parameter-guide" class="guide-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="parameter-guide-title" hidden>
+      <article class="guide-card">
+        <header class="section-head">
+          <div><h2 id="parameter-guide-title">Parameters &amp; Layout</h2><span class="hint">Play-mode controls and VST automation</span></div>
+          <button id="close-parameter-guide" type="button" class="text-button">Close</button>
+        </header>
+        <div class="guide-copy">
+          <section>
+            <h3>Declaration</h3>
+            <code>p_name = param(default, minimum, maximum, step)</code>
+            <p><code>p_</code> は必須です。値は式にそのまま渡されます。<code>step</code> は省略でき、<code>0</code> なら連続値です。使う式より前に宣言してください。</p>
+          </section>
+          <section>
+            <h3>Meaningful ranges</h3>
+            <p>演奏者が期待する変化と、名前・式の意味を揃えます。たとえば秒単位の <code>p_release_s</code> を使い、<code>exp(-8 * l / p_release_s)</code> と書けば、値を大きくするほどリリースが長くなります。</p>
+          </section>
+          <section>
+            <h3>Placement</h3>
+            <ol>
+              <li><b>Arrange</b> を開きます。</li>
+              <li>コントロールをドラッグして移動します。</li>
+              <li>右下のハンドルをドラッグしてサイズを変更します。</li>
+              <li>Arrange を終了すると、位置がVSTプロジェクトに保存されます。</li>
+            </ol>
+          </section>
+          <section>
+            <h3>Right-click &amp; automation</h3>
+            <p>コントロールを右クリックすると、リセット、値のコピー・貼り付け、ノブ・スライダー・トグルの選択ができます。宣言順がVSTオートメーションの順番になります。コメント付きDSLで同じ説明を見るには <b>Parameter Guide</b> を読み込んでください。</p>
+          </section>
+          <div class="tool-row"><button id="load-parameter-guide" class="text-button primary">Load Parameter Guide preset</button></div>
+        </div>
+      </article>
+    </div>
+    <div id="editor-guide" class="guide-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="editor-guide-title" hidden>
+      <article class="guide-card">
+        <header class="section-head">
+          <div><h2 id="editor-guide-title">Editor Guide</h2><span class="hint">Synth DSL and live preview</span></div>
+          <button id="close-editor-guide" type="button" class="text-button">Close</button>
+        </header>
+        <div class="guide-copy">
+          <section>
+            <h3>Write an expression</h3>
+            <p>音声の式を1行ずつ記述します。左側に名前、右側に式を書き、必ず <code>wave</code> と <code>l_limit</code> へ出力してください。</p>
+            <code>wave = s * sin(TAU * freq * t)<br />l_limit = 1.0</code>
+          </section>
+          <section>
+            <h3>Inputs and outputs</h3>
+            <p><code>t</code>、<code>l</code>、<code>freq</code>、<code>s</code> などの入力は補完とHoverで確認できます。<code>wave</code> と <code>l_limit</code> は必須、<code>pan</code> は任意の出力です。<code>l_limit</code> はノートを離してからボイスを終了する秒数です。</p>
+          </section>
+          <section>
+            <h3>Compile and preview</h3>
+            <p><b>Compile</b> または Ctrl+S で式を検証します。<b>Preview</b> または Ctrl+Enter で現在のノートを試聴できます。エラー表示をクリックすると該当位置へ移動します。ローカル変数や式が大きい場合もコンパイルは継続し、CPU 負荷に影響し得る場合だけ Warning を表示します。</p>
+          </section>
+          <section>
+            <h3>Parameters</h3>
+            <p>Play modeの操作子を作るには、式より前に <code>p_name = param(default, min, max, step)</code> を宣言します。配置やVSTオートメーションはPlay modeのGuideで確認できます。</p>
+          </section>
+        </div>
+      </article>
+    </div>
+
+    <script>
+      (() => {
+        const report = (message) => {
+          const status = document.querySelector('#boot-status');
+          if (status) {
+            status.textContent = `UI startup error: ${message}`;
+            status.classList.add('failed');
+          }
+          window.ipc?.postMessage(JSON.stringify({ cmd: 'uiError', message }));
+        };
+        window.addEventListener('error', (event) => report(event.message || 'unknown JavaScript error'));
+        window.addEventListener('unhandledrejection', (event) => report(String(event.reason || 'unhandled rejection')));
+        setTimeout(() => {
+          if (!window.__CODE_SYNTH_UI_READY__) report('startup timed out');
+        }, 8000);
+      })();
+    </script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

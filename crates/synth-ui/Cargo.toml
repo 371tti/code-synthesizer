@@ -1,0 +1,25 @@
+[package]
+name = "synth-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-queue = "0.3.12"
+synth-core = { path = "../synth-core" }
+synth-dsl = { path = "../synth-dsl" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rust-embed = "8.7"
+mime_guess = "2.0"
+wry = { version = "0.55.1", default-features = false, features = ["devtools", "os-webview", "protocol"] }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,0 +1,22 @@
+[package]
+name = "code-synthesizer"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    ".",
+    "crates/synth-core",
+    "crates/synth-dsl",
+    "crates/synth-vst3",
+    "crates/synth-ui",
+    "xtask",
+]
+resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+synth-core = { path = "crates/synth-core" }
+synth-dsl = { path = "crates/synth-dsl" }

@@ -1,0 +1,16 @@
+[package]
+name = "synth-vst3"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+synth-dsl = { path = "../synth-dsl" }
+synth-ui = { path = "../synth-ui" }
+vst3 = "0.3.0"
+
+[lints.rust]
+unsafe_code = "allow"

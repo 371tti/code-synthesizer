@@ -1,0 +1,2096 @@
+---
+title: Math Synthesizer
+description: へんな音を作るやつ
+authors:
+- 371tti
+tags:
+- tools
+- math
+- audio
+is_complete: true
+---
+
+
+<style>
+/* Site CSS owns typography, colors, inputs, buttons, cards and responsive grids. */
+#math-synth, #math-synth * { border-radius: 0 !important; }
+#math-synth p { margin-left: 0; }
+#math-synth h2, #math-synth h3 { padding: 0; }
+#math-synth .hint { color: var(--color-text-0); font-size: .84em; }
+#math-synth .flow { display:grid; gap:10mm; }
+#math-synth .workspace { grid-template-columns:minmax(0,1.7fr) minmax(260px,.65fr); align-items:start; }
+#math-synth .section-head { display:flex; justify-content:space-between; gap:4mm; align-items:center; margin-bottom:3mm; }
+#math-synth .section-head h2 { font-size:1.05em; }
+#math-synth .tool-row { display:flex; flex-wrap:wrap; gap:2mm; align-items:center; }
+#math-synth .tool-row .button { margin:0; }
+#math-synth .editor-card { padding:0; overflow:hidden; }
+#math-synth .editor-head { padding:4mm 5mm 0; }
+#math-synth #monaco-editor { height:min(72vh,190mm); min-height:105mm; border-top:1px solid var(--color-bg-2); border-bottom:1px solid var(--color-bg-2); }
+#math-synth #expr { width:100%; min-height:105mm; margin:0; resize:vertical; }
+#math-synth .editor-foot { display:flex; justify-content:space-between; gap:3mm; padding:2mm 5mm 4mm; font-size:.8em; }
+#math-synth .editor-foot .error { color:var(--color-accent-1); }
+#math-synth .monitor { border:1px solid var(--color-bg-2); background:var(--color-bg-0); }
+#math-synth #wave { display:block; width:100%; height:55mm; }
+#math-synth .compact-controls { display:grid; grid-template-columns:1fr 1fr; gap:3mm 5mm; margin-top:3mm; }
+#math-synth .compact-controls label, #math-synth .slider-row { display:grid; gap:1mm; font-size:.84em; }
+#math-synth .compact-controls input, #math-synth .compact-controls select { width:100%; margin:0; }
+#math-synth input[type="range"] { width:100%; margin:0; accent-color:var(--color-accent-1); }
+#math-synth .slider-label { display:flex; justify-content:space-between; gap:3mm; }
+#math-synth .wide { grid-column:1/-1; }
+#math-synth .keyboard-scroll { overflow-x:auto; }
+#math-synth .piano-wrapper { display:inline-block; user-select:none; }
+#math-synth .piano-whites { display:flex; }
+#math-synth button.key { border:1px solid var(--color-bg-2); cursor:pointer; padding:1mm; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; color:var(--color-text-1); }
+#math-synth button.key.white { width:13mm; height:40mm; background:var(--color-bg-1); border-bottom:1mm solid var(--color-bg-2); }
+#math-synth button.key.black { width:8mm; height:27mm; background:var(--color-bg-2); border-color:var(--color-bg-0); position:absolute; top:0; z-index:2; }
+#math-synth button.key.active { background:var(--color-accent-0); }
+#math-synth button.key .note-label { font-size:.75em; }
+#math-synth button.key .key-label { font-size:.68em; opacity:.7; }
+#math-synth .midi-timeline { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:3mm; align-items:center; margin:3mm 0; }
+#math-synth .midi-timeline time { font-variant-numeric:tabular-nums; font-size:.8em; }
+#math-synth .preset-row { display:grid; grid-template-columns:1fr 1.35fr auto; gap:3mm; align-items:end; }
+#math-synth details > summary { cursor:pointer; }
+#math-synth .compact-note { margin-top:2mm; min-height:1.4em; }
+@media (max-width:900px) {
+    #math-synth .workspace, #math-synth .preset-row { grid-template-columns:1fr; }
+}
+@media (max-width:560px) {
+    #math-synth .compact-controls { grid-template-columns:1fr; }
+    #math-synth .wide { grid-column:auto; }
+    #math-synth .editor-foot { display:block; }
+}
+</style>
+
+
+<main id="math-synth" class="flow">
+    <header>
+        <h1>Math Synthesizer</h1>
+        <div class="hint"><span id="sample-rate-badge">-- Hz</span> · <span id="engine-voice-badge">0 voices</span> · AudioWorklet · poly-safe</div>
+    </header>
+
+    <div class="grid2 workspace">
+        <section class="card-o editor-card">
+            <div class="section-head editor-head">
+                <div><h2>Expression</h2></div>
+                <div class="tool-row">
+                    <a class="button" id="play" href="#">Play</a>
+                    <a class="button" id="stop" href="#">Stop</a>
+                </div>
+            </div>
+            <textarea id="expr" hidden spellcheck="false" autocapitalize="off" autocomplete="off">attack = clamp(t / 0.008, 0, 1)
+release = exp(-6 * l)
+wave = s * attack * release * sin(TAU * freq * t)
+pan = midi_pan
+l_limit = 1.0</textarea>
+            <div id="monaco-editor" aria-label="Math Synthesizer expression editor"></div>
+            <div id="expr-preview" hidden></div>
+            <div class="editor-foot">
+                <span id="editor-diagnostic">loading editor…</span>
+                <span class="hint">Ctrl+Space completion · Ctrl+Enter play</span>
+            </div>
+            <a id="plot" href="#" hidden>Preview</a>
+        </section>
+
+        <div class="flow">
+            <section class="card-o">
+                <div class="section-head"><h2>Wave</h2><span id="message" class="hint"></span></div>
+                <div class="monitor"><canvas id="wave" width="720" height="220"></canvas></div>
+                <div class="compact-controls">
+                    <label>Frequency Hz<input id="freq" type="number" value="440" min="1" max="20000" step="1"></label>
+                    <label>Gain<input id="gain" type="number" value="0.9" min="0" max="2" step="0.05"></label>
+                </div>
+                <details>
+                    <summary class="hint">Playback settings</summary>
+                    <div class="compact-controls">
+                        <label>Play time s<input id="duration" type="number" value="10" min="0.1" max="30" step="0.1"></label>
+                        <label>fallback l_limit ms<input id="release" type="number" value="20" min="1" max="30000" step="1"></label>
+                        <label class="wide">Output sample rate<input id="sr" type="number" value="44100" readonly></label>
+                    </div>
+                </details>
+            </section>
+
+            <section class="card-o">
+                <div class="section-head"><h2>Preset</h2></div>
+                <div class="preset-row">
+                    <label>Category<select id="preset-category"></select></label>
+                    <label>Preset<select id="preset-select"></select></label>
+                    <a class="button" id="preset-load" href="#">Load</a>
+                </div>
+                <p id="preset-description" class="hint compact-note"></p>
+                <span id="preset-code-preview" hidden></span>
+            </section>
+        </div>
+    </div>
+
+    <section class="card-o keyboard-section">
+        <div class="section-head"><h2>Keyboard</h2><div id="midi-status" class="hint">MIDI: 初期化中...</div></div>
+        <div class="keyboard-scroll"><div id="virtual-keyboard"></div></div>
+    </section>
+
+    <section class="card-o midi-file-section">
+        <div class="section-head"><h2>MIDI</h2><div id="midi-info" class="hint">未読み込み</div></div>
+        <input type="file" id="midi-file" accept=".mid,.midi">
+        <div class="midi-timeline">
+            <time id="midi-current">0:00.000</time>
+            <input id="midi-position" type="range" value="0" min="0" max="1" step="0.001" disabled>
+            <time id="midi-duration">0:00.000</time>
+        </div>
+        <div class="tool-row">
+            <a class="button" id="midi-play" href="#">Play</a>
+            <a class="button" id="midi-pause" href="#">Pause</a>
+            <a class="button" id="midi-stop" href="#">Stop</a>
+        </div>
+        <div class="slider-row">
+            <div class="slider-label"><span>Tempo</span><output id="midi-tempo-value">100%</output></div>
+            <input id="midi-tempo" type="range" value="100" min="25" max="400" step="1">
+        </div>
+        <details>
+            <summary class="hint">MIDI transform</summary>
+            <div class="compact-controls">
+                <div class="slider-row"><div class="slider-label"><span>Transpose</span><output id="midi-transpose-value">0 st</output></div><input id="midi-transpose" type="range" value="0" min="-24" max="24" step="1"></div>
+                <div class="slider-row"><div class="slider-label"><span>Velocity</span><output id="midi-velocity-value">100%</output></div><input id="midi-velocity" type="range" value="100" min="0" max="200" step="1"></div>
+                <div class="slider-row wide"><div class="slider-label"><span>Pitch bend range</span><output id="midi-bend-range-value">2 st</output></div><input id="midi-bend-range" type="range" value="2" min="1" max="24" step="1"></div>
+            </div>
+        </details>
+    </section>
+
+    <details class="card-o">
+        <summary>DSL reference</summary>
+        <p><code>t</code> key age · <code>s</code> velocity · <code>l</code> release age · <code>freq</code> Hz · <code>note</code> · <code>ch</code></p>
+        <p><code>bend</code> · <code>bend_st</code> · <code>mw</code> · <code>vol</code> · <code>midi_pan</code> · <code>mexpr</code> · <code>sustain</code> · <code>pressure</code> · <code>poly_pressure</code> · <code>program</code> · <code>cc(n)</code></p>
+        <p>Outputs: <code>wave</code>, <code>pan</code>, <code>l_limit</code>. Functions: <code>sin cos tan abs sqrt pow exp log min max clamp mod saw square pulse triangle noise</code>.</p>
+    </details>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+<script>
+window.addEventListener('load', () => {
+    const exprInput = document.getElementById('expr');
+    const exprPreview = document.getElementById('expr-preview');
+    const freqInput = document.getElementById('freq');
+    const durationInput = document.getElementById('duration');
+    const srInput = document.getElementById('sr');
+    const gainInput = document.getElementById('gain');
+    const releaseInput = document.getElementById('release');
+    const messageEl = document.getElementById('message');
+    const canvas = document.getElementById('wave');
+    const ctx = canvas.getContext('2d');
+    const examples = null;
+    const playBtn = document.getElementById('play');
+    const stopBtn = document.getElementById('stop');
+    const plotBtn = document.getElementById('plot');
+    const midiStatusEl = document.getElementById('midi-status');
+    const keyboardContainer = document.getElementById('virtual-keyboard');
+    const midiFileInput = document.getElementById('midi-file');
+    const midiPlayBtn = document.getElementById('midi-play');
+    const midiPauseBtn = document.getElementById('midi-pause');
+    const midiStopBtn = document.getElementById('midi-stop');
+    const midiTempoInput = document.getElementById('midi-tempo');
+    const midiTempoValue = document.getElementById('midi-tempo-value');
+    const midiPositionInput = document.getElementById('midi-position');
+    const midiCurrentEl = document.getElementById('midi-current');
+    const midiDurationEl = document.getElementById('midi-duration');
+    const midiTransposeInput = document.getElementById('midi-transpose');
+    const midiTransposeValue = document.getElementById('midi-transpose-value');
+    const midiVelocityInput = document.getElementById('midi-velocity');
+    const midiVelocityValue = document.getElementById('midi-velocity-value');
+    const midiBendRangeInput = document.getElementById('midi-bend-range');
+    const midiBendRangeValue = document.getElementById('midi-bend-range-value');
+    const midiInfoEl = document.getElementById('midi-info');
+    const presetCategoryInput = document.getElementById('preset-category');
+    const presetSelectInput = document.getElementById('preset-select');
+    const presetLoadBtn = document.getElementById('preset-load');
+    const presetDescriptionEl = document.getElementById('preset-description');
+    const presetCodePreviewEl = document.getElementById('preset-code-preview');
+    const editorShell = document.getElementById('editor-shell');
+    const lineNumbersEl = document.getElementById('line-numbers');
+    const autocompleteEl = document.getElementById('autocomplete');
+    const editorDiagnosticEl = document.getElementById('editor-diagnostic');
+    const cursorStatusEl = document.getElementById('cursor-status');
+    const editorFormatBtn = document.getElementById('editor-format');
+    const editorShareBtn = document.getElementById('editor-share');
+    const sampleRateBadge = document.getElementById('sample-rate-badge');
+    const engineVoiceBadge = document.getElementById('engine-voice-badge');
+    const monacoHost = document.getElementById('monaco-editor');
+    let monacoEditor = null;
+
+    const docStyles = getComputedStyle(document.documentElement);
+    const getColorVar = (name, fallback) => {
+        const value = docStyles.getPropertyValue(name);
+        return value ? value.trim() : fallback;
+    };
+    const COLOR_BASELINE = getColorVar('--color-bg-2', '#666');
+    const COLOR_WAVE = getColorVar('--color-accent-1', '#ff7cc2');
+    const EXPRESSION_PLACEHOLDER = '式を入力するとここに表示されます';
+    const URL_EXPR_PARAM = 'expr';
+    const MIDI_PITCH_CENTER = 8192;
+    const MIDI_PITCH_MAX = 16383;
+    const MAX_PROGRAM_INSTRUCTIONS = 2048;
+    const MAX_TOKENS = 2048;
+    const MONITOR_MAX_FPS = 30;
+    const LOOKAHEAD_SECONDS = 0.12;
+    const SCHEDULER_INTERVAL_MS = 25;
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const masterGain = audioCtx.createGain();
+    const limiter = audioCtx.createDynamicsCompressor();
+    limiter.threshold.value = -2.0;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.080;
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.minDecibels = -90;
+    analyser.maxDecibels = -10;
+    analyser.smoothingTimeConstant = 0.65;
+    masterGain.gain.value = Number(gainInput.value) || 0.9;
+    masterGain.connect(limiter);
+    limiter.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    const analyserData = new Float32Array(analyser.fftSize);
+    const idleData = new Float32Array(analyser.fftSize);
+    srInput.value = String(Math.round(audioCtx.sampleRate));
+    if (sampleRateBadge) sampleRateBadge.textContent = `${Math.round(audioCtx.sampleRate)} Hz`;
+
+    let synthNode = null;
+    let workletReadyPromise = null;
+    let activeProgram = null;
+    let currentExpressionValid = false;
+    let lastPlotArray = null;
+    let lastSyncedExprValue = null;
+    let lastMonitorUpdate = 0;
+    let voiceSerial = 0;
+    let currentMainVoice = null;
+    const activeVoices = new Map();
+    const pointerVoiceMap = new Map();
+    const keyboardVoiceMap = new Map();
+    const midiPitchState = new Map();
+    const midiPitchRawState = new Map();
+    const midiChannelStates = new Map();
+    const midiVoiceQueues = new Map();
+    const midiSustainState = new Map();
+    const midiSustainVoices = new Map();
+    const noteElements = new Map();
+
+    const midiState = {
+        notes: [], controls: [], durationSeconds: 0, ticksPerBeat: 0, tempoSegments: [],
+        playing: false, sessionId: 0, name: null,
+        playStartAudioTime: 0, playStartSongTime: 0, positionSeconds: 0,
+        tempoScale: 1, eventIndex: 0, events: [], schedulerTimer: null, finishTimer: null
+    };
+    const MIDI_FILE_PORT = { id: 'file-playback', name: 'MIDI File', type: 'input' };
+
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const releaseSeconds = () => clamp((Number(releaseInput?.value) || 20) / 1000, 0.001, 30);
+    const clampPitchValue = (value) => Math.max(0, Math.min(MIDI_PITCH_MAX, value | 0));
+    const pitchBendRange = () => clamp(Number(midiBendRangeInput?.value) || 2, 1, 24);
+    const pitchValueToNormalized = (value) => clamp((value - MIDI_PITCH_CENTER) / MIDI_PITCH_CENTER, -1, 1);
+    const pitchValueToDetune = (value) => pitchValueToNormalized(value) * pitchBendRange() * 100;
+    const getPortIdentifier = (port) => port ? (port.id || port.name || 'midi') : 'midi';
+    const makeMidiKey = (port, channel) => `${getPortIdentifier(port)}:${channel ?? 0}`;
+    const getDetuneForMidiKey = (key) => midiPitchState.get(key) ?? 0;
+    const nextVoiceId = (prefix = 'voice') => `${prefix}-${++voiceSerial}`;
+    const audioFrameAt = (time) => Math.max(0, Math.round(time * audioCtx.sampleRate));
+
+    function setMessage(text, isError = false) {
+        messageEl.textContent = text || '';
+        messageEl.style.color = isError ? 'var(--color-accent-1)' : 'var(--color-text-0)';
+    }
+    function setMidiInfo(text, isError = false) {
+        if (!midiInfoEl) return;
+        midiInfoEl.textContent = text;
+        midiInfoEl.style.color = isError ? 'var(--color-accent-1)' : 'var(--color-text-0)';
+    }
+
+    function getExpressionFromUrl() {
+        try { return new URL(window.location.href).searchParams.get(URL_EXPR_PARAM); }
+        catch (_) { return null; }
+    }
+    function syncExpressionQueryParam(value) {
+        const raw = value ?? '';
+        const targetValue = raw.trim() ? raw : '';
+        if (lastSyncedExprValue === targetValue) return;
+        try {
+            const url = new URL(window.location.href);
+            if (targetValue) url.searchParams.set(URL_EXPR_PARAM, raw);
+            else url.searchParams.delete(URL_EXPR_PARAM);
+            history.replaceState(null, '', url.toString());
+        } catch (_) { }
+        lastSyncedExprValue = targetValue;
+    }
+
+    const ALLOWED_VARS = new Set(['t','s','l','freq','note','time','velocity','noteNumber','ch','bend','bend_st','mw','vol','midi_pan','mexpr','sustain','pressure','poly_pressure','program']);
+    const OUTPUT_NAMES = new Set(['wave', 'pan', 'l_limit']);
+    const CONSTANTS = { PI: Math.PI, TAU: Math.PI * 2, TWO_PI: Math.PI * 2, E: Math.E, PHI: (1 + Math.sqrt(5)) / 2 };
+    const FUNCTION_ARITY = new Map([
+        ['sin',[1,1]], ['cos',[1,1]], ['tan',[1,1]], ['asin',[1,1]], ['acos',[1,1]], ['atan',[1,1]],
+        ['sinh',[1,1]], ['cosh',[1,1]], ['tanh',[1,1]], ['abs',[1,1]], ['sqrt',[1,1]], ['cbrt',[1,1]],
+        ['floor',[1,1]], ['ceil',[1,1]], ['round',[1,1]], ['sign',[1,1]], ['exp',[1,1]], ['log',[1,1]],
+        ['log10',[1,1]], ['log2',[1,1]], ['pow',[2,2]], ['min',[1,32]], ['max',[1,32]], ['clamp',[3,3]],
+        ['mod',[2,2]], ['cc',[1,1]], ['noise',[0,0]], ['saw',[0,2]], ['triangle',[0,2]], ['pulse',[0,3]], ['square',[0,3]]
+    ]);
+    const MAX_ASSIGNMENTS = 256;
+
+    function stripProgramComments(input) {
+        return String(input ?? '').split(/\r?\n/).map(line => {
+            const hash = line.indexOf('#');
+            const slash = line.indexOf('//');
+            let cut = line.length;
+            if (hash >= 0) cut = Math.min(cut, hash);
+            if (slash >= 0) cut = Math.min(cut, slash);
+            return line.slice(0, cut);
+        }).join('\n');
+    }
+
+    function splitProgramStatementsDetailed(input) {
+        const out = [];
+        const lines = String(input ?? '').split(/\r?\n/);
+        let current = '';
+        let currentLine = 1;
+        let depth = 0;
+
+        const flush = () => {
+            const text = current.trim();
+            if (text) out.push({ text, line: currentLine });
+            current = '';
+            depth = 0;
+        };
+
+        const scanDepth = (text) => {
+            for (const ch of text) {
+                if (ch === '(') depth++;
+                else if (ch === ')') depth = Math.max(0, depth - 1);
+            }
+        };
+
+        const append = (text, lineNumber) => {
+            const trimmed = text.trim();
+            if (!trimmed) return;
+            if (!current) currentLine = lineNumber;
+            current += (current ? ' ' : '') + trimmed;
+            scanDepth(trimmed);
+        };
+
+        lines.forEach((rawLine, lineIndex) => {
+            const lineNumber = lineIndex + 1;
+            const hash = rawLine.indexOf('#');
+            const slash = rawLine.indexOf('//');
+            let cut = rawLine.length;
+            if (hash >= 0) cut = Math.min(cut, hash);
+            if (slash >= 0) cut = Math.min(cut, slash);
+            const clean = rawLine.slice(0, cut);
+
+            // A new top-level assignment starts a new statement.  Otherwise the
+            // line is a continuation of the previous expression.  This allows:
+            //   x = 1
+            //     + 2
+            //     - 3
+            // as well as multiline parenthesized expressions.
+            const startsAssignment = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/.test(clean);
+            if (startsAssignment && current && depth === 0) flush();
+
+            // Semicolons only terminate statements at top level.
+            let partStart = 0;
+            let localDepth = depth;
+            for (let i = 0; i <= clean.length; i++) {
+                const ch = clean[i];
+                if (i < clean.length) {
+                    if (ch === '(') localDepth++;
+                    else if (ch === ')') localDepth = Math.max(0, localDepth - 1);
+                }
+                if (i === clean.length || (ch === ';' && localDepth === 0)) {
+                    const part = clean.slice(partStart, i);
+                    append(part, lineNumber);
+                    if (ch === ';' && depth === 0) flush();
+                    partStart = i + 1;
+                }
+            }
+        });
+
+        flush();
+        return out;
+    }
+
+    function splitProgramStatements(input) {
+        return splitProgramStatementsDetailed(input).map(x => x.text);
+    }
+
+    function tokenizeExpression(input) {
+        const tokens = [];
+        let i = 0;
+        while (i < input.length) {
+            const ch = input[i];
+            if (/\s/.test(ch)) { i++; continue; }
+            if ((ch >= '0' && ch <= '9') || (ch === '.' && /\d/.test(input[i + 1] || ''))) {
+                const m = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(input.slice(i));
+                if (!m) throw new Error(`数値を解析できません: ${i + 1}`);
+                tokens.push({ type: 'number', value: Number(m[0]), pos: i });
+                i += m[0].length;
+            } else if (/[A-Za-z_]/.test(ch)) {
+                const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(input.slice(i));
+                tokens.push({ type: 'id', value: m[0], pos: i });
+                i += m[0].length;
+            } else if ('+-*/%^(),'.includes(ch)) {
+                if (ch === '*' && input[i + 1] === '*') {
+                    tokens.push({ type: 'op', value: '**', pos: i }); i += 2;
+                } else {
+                    tokens.push({ type: '+-*/%^'.includes(ch) ? 'op' : 'punc', value: ch, pos: i }); i++;
+                }
+            } else {
+                throw new Error(`使用できない文字 '${ch}' (${i + 1})`);
+            }
+            if (tokens.length > MAX_TOKENS) throw new Error('式が長すぎます');
+        }
+        tokens.push({ type: 'eof', value: '', pos: input.length });
+        return tokens;
+    }
+
+    function parseExpression(input, localSlots = new Map()) {
+        const tokens = tokenizeExpression(input);
+        let index = 0;
+        const peek = () => tokens[index];
+        const take = () => tokens[index++];
+        const expect = (value) => {
+            const t = take();
+            if (t.value !== value) throw new Error(`'${value}' が必要です (${t.pos + 1})`);
+        };
+        const precedence = (op) => op === '+' || op === '-' ? 10 : op === '*' || op === '/' || op === '%' ? 20 : op === '^' || op === '**' ? 30 : -1;
+
+        function parsePrimary() {
+            const t = take();
+            if (t.type === 'number') return { type: 'number', value: t.value };
+            if (t.type === 'op' && (t.value === '+' || t.value === '-')) return { type: 'unary', op: t.value, arg: parsePrimary() };
+            if (t.value === '(') {
+                const node = parseBinary(0);
+                expect(')');
+                return node;
+            }
+            if (t.type === 'id') {
+                if (peek().value === '(') {
+                    take();
+                    const args = [];
+                    if (peek().value !== ')') {
+                        while (true) {
+                            args.push(parseBinary(0));
+                            if (peek().value !== ',') break;
+                            take();
+                        }
+                    }
+                    expect(')');
+                    const arity = FUNCTION_ARITY.get(t.value);
+                    if (!arity) throw new Error(`使用できない関数です: ${t.value}`);
+                    if (args.length < arity[0] || args.length > arity[1]) throw new Error(`${t.value} の引数数が不正です`);
+                    return { type: 'call', name: t.value, args };
+                }
+                if (Object.prototype.hasOwnProperty.call(CONSTANTS, t.value)) return { type: 'number', value: CONSTANTS[t.value] };
+                if (localSlots.has(t.value)) return { type: 'local', slot: localSlots.get(t.value), name: t.value };
+                if (!ALLOWED_VARS.has(t.value)) throw new Error(`未定義の変数です: ${t.value}`);
+                return { type: 'var', name: t.value };
+            }
+            throw new Error(`式を解析できません (${t.pos + 1})`);
+        }
+
+        function parseBinary(minPrec) {
+            let left = parsePrimary();
+            while (peek().type === 'op') {
+                const op = peek().value;
+                const prec = precedence(op);
+                if (prec < minPrec) break;
+                take();
+                const rightAssoc = op === '^' || op === '**';
+                const right = parseBinary(rightAssoc ? prec : prec + 1);
+                left = { type: 'binary', op, left, right };
+            }
+            return left;
+        }
+
+        const ast = parseBinary(0);
+        if (peek().type !== 'eof') throw new Error(`余分なトークンがあります (${peek().pos + 1})`);
+        return ast;
+    }
+
+    function compileAst(ast) {
+        const code = [];
+        const emit = (node) => {
+            if (code.length > MAX_PROGRAM_INSTRUCTIONS) throw new Error('式が複雑すぎます');
+            if (node.type === 'number') { code.push([0, node.value]); return; }
+            if (node.type === 'var') { code.push([1, node.name]); return; }
+            if (node.type === 'local') { code.push([11, node.slot]); return; }
+            if (node.type === 'unary') { emit(node.arg); code.push([node.op === '-' ? 2 : 3]); return; }
+            if (node.type === 'binary') {
+                emit(node.left); emit(node.right);
+                const opcode = { '+':4, '-':5, '*':6, '/':7, '%':8, '^':9, '**':9 }[node.op];
+                code.push([opcode]); return;
+            }
+            if (node.type === 'call') {
+                node.args.forEach(emit);
+                code.push([10, node.name, node.args.length]); return;
+            }
+            throw new Error('未知の構文です');
+        };
+        emit(ast);
+        return code;
+    }
+
+
+    function astToJit(node) {
+        if (node.type === 'number') {
+            if (Number.isFinite(node.value)) return String(node.value);
+            return node.value < 0 ? '-Infinity' : 'Infinity';
+        }
+        if (node.type === 'local') return `_l${node.slot}`;
+        if (node.type === 'var') {
+            switch (node.name) {
+                case 't': case 'time': return 'v.t';
+                case 's': case 'velocity': return 'v.velocity';
+                case 'l': return 'v.l';
+                case 'freq': return 'v.freq';
+                case 'note': case 'noteNumber': return 'v.noteNumber';
+                case 'ch': return 'v.channel1';
+                case 'bend': return '(ms?ms.bend:0)';
+                case 'bend_st': return '(ms?ms.bendSemitones:0)';
+                case 'mw': return '(cc?cc[1]:0)';
+                case 'vol': return '(cc?cc[7]:1)';
+                case 'midi_pan': return '(cc?cc[10]*2-1:0)';
+                case 'mexpr': return '(cc?cc[11]:1)';
+                case 'sustain': return '(cc?cc[64]:0)';
+                case 'pressure': return '(ms?ms.pressure:0)';
+                case 'poly_pressure': return '(ms&&v.noteNumber>=0?ms.polyPressure[v.noteIndex]:0)';
+                case 'program': return '(ms?ms.program:0)';
+                default: return '0';
+            }
+        }
+        if (node.type === 'unary') {
+            const a = astToJit(node.arg);
+            return node.op === '-' ? `(-(${a}))` : `(+(${a}))`;
+        }
+        if (node.type === 'binary') {
+            const a = astToJit(node.left);
+            const b = astToJit(node.right);
+            if (node.op === '^' || node.op === '**') return `Math.pow((${a}),(${b}))`;
+            return `((${a})${node.op}(${b}))`;
+        }
+        if (node.type === 'call') {
+            const a = node.args.map(astToJit);
+            switch (node.name) {
+                case 'sin': case 'cos': case 'tan':
+                case 'asin': case 'acos': case 'atan':
+                case 'sinh': case 'cosh': case 'tanh':
+                case 'abs': case 'sqrt': case 'cbrt':
+                case 'floor': case 'ceil': case 'round':
+                case 'sign': case 'exp': case 'log':
+                case 'log10': case 'log2':
+                    return `Math.${node.name}(${a[0]})`;
+                case 'pow': return `Math.pow(${a[0]},${a[1]})`;
+                case 'min': return `Math.min(${a.join(',')})`;
+                case 'max': return `Math.max(${a.join(',')})`;
+                case 'clamp': return `Math.min(${a[2]},Math.max(${a[1]},${a[0]}))`;
+                case 'mod': return `h.mod(${a[0]},${a[1]})`;
+                case 'cc': return `h.ccValue(ms,${a[0]})`;
+                case 'noise': return `(Math.random()*2-1)`;
+                case 'saw': {
+                    const f = a[0] ?? 'v.freq';
+                    const t = a[1] ?? 'v.t';
+                    return `h.sawJit(${f},${t})`;
+                }
+                case 'triangle': {
+                    const f = a[0] ?? 'v.freq';
+                    const t = a[1] ?? 'v.t';
+                    return `h.triangleJit(${f},${t})`;
+                }
+                case 'pulse': case 'square': {
+                    const f = a[0] ?? 'v.freq';
+                    const t = a[1] ?? 'v.t';
+                    const duty = a[2] ?? '0.5';
+                    return `h.squareJit(${f},${t},${duty})`;
+                }
+                default: return '0';
+            }
+        }
+        return '0';
+    }
+
+    function compileProgram(input) {
+        const rawEntries = splitProgramStatementsDetailed(input);
+        const rawStatements = rawEntries.map(x => x.text);
+        if (!rawStatements.length) throw new Error('式を入力してください');
+        if (rawStatements.length > MAX_ASSIGNMENTS) throw new Error(`定義は最大 ${MAX_ASSIGNMENTS} 個です`);
+
+        let legacyImplicit = false;
+        let parsedStatements;
+        if (rawStatements.length === 1 && !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(rawStatements[0])) {
+            legacyImplicit = true;
+            parsedStatements = [{ name: 'wave', expr: rawStatements[0], line: rawEntries[0]?.line || 1 }];
+        } else {
+            parsedStatements = rawEntries.map((entry) => {
+                const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(entry.text);
+                if (!m) throw new Error(`${entry.line}行目: name = expression の形式で書いてください`);
+                return { name: m[1], expr: m[2].trim(), line: entry.line };
+            });
+        }
+
+        const slots = new Map();
+        const statements = [];
+        const jitLines = ['const cc=ms?ms.cc:null;'];
+        let instructionCount = 0;
+        let hasWave = false, hasPan = false, hasLLimit = false;
+        let waveSlot = -1, panSlot = -1, lLimitSlot = -1;
+
+        for (const item of parsedStatements) {
+            const { name, expr, line } = item;
+            if (ALLOWED_VARS.has(name) || Object.prototype.hasOwnProperty.call(CONSTANTS, name) || FUNCTION_ARITY.has(name)) {
+                throw new Error(`${line}行目: '${name}' は予約済みなので代入できません`);
+            }
+            if (slots.has(name)) throw new Error(`${line}行目: '${name}' はすでに定義されています`);
+            let ast, code;
+            try {
+                ast = parseExpression(expr, slots);
+                code = compileAst(ast);
+            } catch (err) {
+                throw new Error(`${line}行目: ${err.message}`);
+            }
+            instructionCount += code.length;
+            if (instructionCount > MAX_PROGRAM_INSTRUCTIONS) throw new Error('プログラム全体が複雑すぎます');
+            const slot = slots.size;
+            slots.set(name, slot);
+            const output = OUTPUT_NAMES.has(name) ? name : null;
+            statements.push({ name, slot, output, code, line });
+            jitLines.push(`const _l${slot}=(${astToJit(ast)});`);
+            if (name === 'wave') { hasWave = true; waveSlot = slot; }
+            if (name === 'pan') { hasPan = true; panSlot = slot; }
+            if (name === 'l_limit') { hasLLimit = true; lLimitSlot = slot; }
+        }
+
+        if (!hasWave) throw new Error('出力 wave = ... が必要です');
+        if (hasPan) {
+            jitLines.push(`v._pan=Number.isFinite(_l${panSlot})?Math.max(-1,Math.min(1,_l${panSlot})):0;`);
+        } else {
+            jitLines.push('v._pan=0;');
+        }
+        if (hasLLimit) {
+            jitLines.push(`v._ll=Number.isFinite(_l${lLimitSlot})?Math.max(0,Math.min(h.maxLLimit,_l${lLimitSlot})):h.defaultRelease;`);
+        } else {
+            jitLines.push('v._ll=h.defaultRelease;');
+        }
+        jitLines.push(`return Number.isFinite(_l${waveSlot})?_l${waveSlot}:0;`);
+        return {
+            version: 3,
+            slots: slots.size,
+            statements,
+            hasPan,
+            hasLLimit,
+            legacyImplicit,
+            jitBody: jitLines.join(''),
+            sourceStatements: parsedStatements
+        };
+    }
+
+    function compileCurrentExpression(showError = true) {
+        const expr = exprInput.value.trim();
+        if (!expr) { if (showError) setMessage('数式を入力してください。', true); return null; }
+        try {
+            const program = compileProgram(expr);
+            activeProgram = program;
+            currentExpressionValid = true;
+            if (synthNode) synthNode.port.postMessage({ type: 'program', code: program });
+            if (showError) {
+                const outputs = ['wave', program.hasPan ? 'pan' : null, program.hasLLimit ? 'l_limit' : null].filter(Boolean).join(', ');
+                setMessage(`式OK: ${program.statements.length} definitions / outputs: ${outputs}`);
+            }
+            return program;
+        } catch (err) {
+            currentExpressionValid = false;
+            if (showError) setMessage(`式エラー: ${err.message}`, true);
+            return null;
+        }
+    }
+
+    const WORKLET_SOURCE = "class MathSynthProcessor extends AudioWorkletProcessor {\n    constructor() {\n        super();\n        this.program = null;\n        this.code = null;\n        this.hasPan = false;\n        this.hasLLimit = false;\n        this.legacyImplicit = false;\n        this.jit = null;\n\n        // Hot path uses a dense array. Map is event-only lookup.\n        this.voices = [];\n        this.voiceById = new Map();\n        this.liveVoiceCount = 0;\n        this.voicesDirty = false;\n\n        this.events = [];\n        this.stack = new Float64Array(512);\n        this.locals = new Float64Array(64);\n        this.defaultRelease = 0.02;\n        this.outWave = 0;\n        this.outPan = 0;\n        this.outLLimit = this.defaultRelease;\n        this.maxLLimit = 30;\n        this.maxVoices = 32;\n        this.midiChannels = new Map();\n        this.voiceNorm = 1;\n        this.voiceNormTarget = 1;\n        this.invSampleRate = 1 / sampleRate;\n        this.normAttack = 1 - Math.exp(-1 / (0.002 * sampleRate));\n        this.normRelease = 1 - Math.exp(-1 / (0.080 * sampleRate));\n        this.endedIds = [];\n\n        this.port.onmessage = (event) => this.onMessage(event.data || {});\n    }\n\n    // Strings exist only here, when a new program arrives \u2014 never in the sample loop.\n    varId(name) {\n        switch (name) {\n            case 't': case 'time': return 0;\n            case 's': case 'velocity': return 1;\n            case 'l': return 2;\n            case 'freq': return 3;\n            case 'note': case 'noteNumber': return 4;\n            case 'ch': return 5;\n            case 'bend': return 6;\n            case 'bend_st': return 7;\n            case 'mw': return 8;\n            case 'vol': return 9;\n            case 'midi_pan': return 10;\n            case 'mexpr': return 11;\n            case 'sustain': return 12;\n            case 'pressure': return 13;\n            case 'poly_pressure': return 14;\n            case 'program': return 15;\n            default: return -1;\n        }\n    }\n\n    fnId(name) {\n        switch (name) {\n            case 'sin': return 0; case 'cos': return 1; case 'tan': return 2;\n            case 'asin': return 3; case 'acos': return 4; case 'atan': return 5;\n            case 'sinh': return 6; case 'cosh': return 7; case 'tanh': return 8;\n            case 'abs': return 9; case 'sqrt': return 10; case 'cbrt': return 11;\n            case 'floor': return 12; case 'ceil': return 13; case 'round': return 14;\n            case 'sign': return 15; case 'exp': return 16; case 'log': return 17;\n            case 'log10': return 18; case 'log2': return 19; case 'pow': return 20;\n            case 'min': return 21; case 'max': return 22; case 'clamp': return 23;\n            case 'mod': return 24; case 'cc': return 25; case 'noise': return 26;\n            case 'saw': return 27; case 'pulse': return 28; case 'square': return 29;\n            case 'triangle': return 30;\n            default: return -1;\n        }\n    }\n\n    normalizeProgram(p) {\n        if (!p || !Array.isArray(p.statements)) return null;\n        const flat = [];\n        for (let si = 0; si < p.statements.length; si++) {\n            const st = p.statements[si];\n            const src = st.code || [];\n            for (let i = 0; i < src.length; i++) {\n                const ins = src[i];\n                const op = ins[0] | 0;\n                let a = 0, b = 0;\n                if (op === 0) a = Number(ins[1]) || 0;\n                else if (op === 1) a = this.varId(ins[1]);\n                else if (op === 10) { a = this.fnId(ins[1]); b = ins[2] | 0; }\n                else if (op === 11) a = ins[1] | 0;\n                flat.push(op, a, b);\n            }\n            let outputId = 0;\n            if (st.output === 'wave') outputId = 1;\n            else if (st.output === 'pan') outputId = 2;\n            else if (st.output === 'l_limit') outputId = 3;\n            // STORE statement result, local slot, output id.\n            flat.push(12, st.slot | 0, outputId);\n        }\n        return {\n            code: new Float64Array(flat),\n            slots: Math.max(1, Math.min(256, Number(p.slots) || 1)),\n            hasPan: !!p.hasPan,\n            hasLLimit: !!p.hasLLimit,\n            legacyImplicit: !!p.legacyImplicit\n        };\n    }\n\n    insertEvent(event) {\n        const q = this.events;\n        const n = q.length;\n        if (!n || q[n - 1].frame <= event.frame) { q.push(event); return; }\n        let lo = 0, hi = n;\n        while (lo < hi) {\n            const mid = (lo + hi) >> 1;\n            if (q[mid].frame <= event.frame) lo = mid + 1;\n            else hi = mid;\n        }\n        q.splice(lo, 0, event);\n    }\n\n    onMessage(msg) {\n        if (msg.type === 'program') {\n            const p = this.normalizeProgram(msg.code);\n            this.program = p;\n            this.code = p?.code || null;\n            this.hasPan = !!p?.hasPan;\n            this.hasLLimit = !!p?.hasLLimit;\n            this.legacyImplicit = !!p?.legacyImplicit;\n            this.locals = new Float64Array(p?.slots || 1);\n            this.jit = null;\n            if (p && typeof msg.code?.jitBody === 'string') {\n                try { this.jit = new Function('v', 'ms', 'h', msg.code.jitBody); }\n                catch (_) { this.jit = null; }\n            }\n            this.port.postMessage({ type: 'engineMode', mode: this.jit ? 'JIT' : 'VM' });\n            return;\n        }\n        if (msg.type === 'config') {\n            if (Number.isFinite(msg.releaseSeconds)) {\n                this.defaultRelease = Math.max(0.001, Math.min(this.maxLLimit, msg.releaseSeconds));\n            }\n            return;\n        }\n        if (msg.type === 'allOff') {\n            this.events.length = 0;\n            const vs = this.voices;\n            for (let i = 0; i < vs.length; i++) if (!vs[i].dead) this.releaseVoice(vs[i]);\n            return;\n        }\n        if (msg.type === 'hardReset') {\n            this.events.length = 0;\n            this.voices.length = 0;\n            this.voiceById.clear();\n            this.liveVoiceCount = 0;\n            this.voicesDirty = false;\n            this.voiceNorm = 1;\n            this.voiceNormTarget = 1;\n            return;\n        }\n        if (msg.type === 'noteOn' || msg.type === 'noteOff' || msg.type === 'pitch' || msg.type === 'midiCC' || msg.type === 'pressure' || msg.type === 'program' || msg.type === 'polyPressure' || msg.type === 'kill' || msg.type === 'midiReset') {\n            const frame = Number.isFinite(msg.frame) ? Math.max(currentFrame, Math.floor(msg.frame)) : currentFrame;\n            this.insertEvent({ ...msg, frame });\n        }\n    }\n\n    getMidiState(key) {\n        if (!key) return null;\n        let state = this.midiChannels.get(key);\n        if (!state) {\n            const cc = new Float64Array(128);\n            cc[7] = 1; cc[10] = 64 / 127; cc[11] = 1;\n            state = { cc, polyPressure: new Float64Array(128), bend: 0, bendSemitones: 0, pressure: 0, program: 0 };\n            this.midiChannels.set(key, state);\n        }\n        return state;\n    }\n\n    polyBlep(t, dt) {\n        if (!(dt > 0) || dt >= 1) return 0;\n        if (t < dt) {\n            const x = t / dt;\n            return x + x - x * x - 1;\n        }\n        if (t > 1 - dt) {\n            const x = (t - 1) / dt;\n            return x * x + x + x + 1;\n        }\n        return 0;\n    }\n\n    mod(x, y) {\n        if (!Number.isFinite(y) || y === 0) return 0;\n        return ((x % y) + y) % y;\n    }\n\n    ccValue(ms, n) {\n        if (!ms) return 0;\n        n = Math.round(n || 0);\n        if (n < 0) n = 0; else if (n > 127) n = 127;\n        return ms.cc[n] || 0;\n    }\n\n    sawJit(f, tt) {\n        const phase = this.mod(f * tt, 1);\n        const dt = Math.min(0.999, Math.abs(f) * this.invSampleRate);\n        return (phase * 2 - 1) - this.polyBlep(phase, dt);\n    }\n\n    squareJit(f, tt, duty) {\n        if (duty < 0.01) duty = 0.01; else if (duty > 0.99) duty = 0.99;\n        const phase = this.mod(f * tt, 1);\n        const dt = Math.min(0.999, Math.abs(f) * this.invSampleRate);\n        let x = phase < duty ? 1 : -1;\n        x += this.polyBlep(phase, dt);\n        x -= this.polyBlep(this.mod(phase - duty, 1), dt);\n        return x;\n    }\n\n    triangleJit(f, tt) {\n        return 1 - 4 * Math.abs(this.mod(f * tt, 1) - 0.5);\n    }\n\n    // One flat numeric VM. No strings, nested instruction arrays or env objects in the hot loop.\n    evaluateProgram(v) {\n        const code = this.code;\n        if (!code) {\n            this.outWave = 0; this.outPan = 0; this.outLLimit = this.defaultRelease;\n            return;\n        }\n        const stack = this.stack;\n        const locals = this.locals;\n        const ms = v.midiState;\n        const cc = ms ? ms.cc : null;\n        let sp = 0;\n        let wave = 0, pan = 0, lLimit = this.defaultRelease;\n\n        for (let ip = 0; ip < code.length; ip += 3) {\n            const op = code[ip] | 0;\n            const a0 = code[ip + 1];\n            const b0 = code[ip + 2];\n            switch (op) {\n                case 0: stack[sp++] = a0; break;\n                case 1: {\n                    const id = a0 | 0;\n                    let x = 0;\n                    switch (id) {\n                        case 0: x = v.t; break;\n                        case 1: x = v.velocity; break;\n                        case 2: x = v.l; break;\n                        case 3: x = v.freq; break;\n                        case 4: x = v.noteNumber; break;\n                        case 5: x = v.channel1; break;\n                        case 6: x = ms ? ms.bend : 0; break;\n                        case 7: x = ms ? ms.bendSemitones : 0; break;\n                        case 8: x = cc ? cc[1] : 0; break;\n                        case 9: x = cc ? cc[7] : 1; break;\n                        case 10: x = cc ? cc[10] * 2 - 1 : 0; break;\n                        case 11: x = cc ? cc[11] : 1; break;\n                        case 12: x = cc ? cc[64] : 0; break;\n                        case 13: x = ms ? ms.pressure : 0; break;\n                        case 14: x = ms && v.noteNumber >= 0 ? ms.polyPressure[v.noteIndex] : 0; break;\n                        case 15: x = ms ? ms.program : 0; break;\n                    }\n                    stack[sp++] = x;\n                    break;\n                }\n                case 2: stack[sp - 1] = -stack[sp - 1]; break;\n                case 3: break;\n                case 4: stack[sp - 2] = stack[sp - 2] + stack[--sp]; break;\n                case 5: stack[sp - 2] = stack[sp - 2] - stack[--sp]; break;\n                case 6: stack[sp - 2] = stack[sp - 2] * stack[--sp]; break;\n                case 7: stack[sp - 2] = stack[sp - 2] / stack[--sp]; break;\n                case 8: stack[sp - 2] = stack[sp - 2] % stack[--sp]; break;\n                case 9: stack[sp - 2] = Math.pow(stack[sp - 2], stack[--sp]); break;\n                case 10: {\n                    const fn = a0 | 0;\n                    const argc = b0 | 0;\n                    const base = sp - argc;\n                    const a = argc > 0 ? stack[base] : 0;\n                    const b = argc > 1 ? stack[base + 1] : 0;\n                    const c = argc > 2 ? stack[base + 2] : 0;\n                    let x = 0;\n                    switch (fn) {\n                        case 0: x = Math.sin(a); break;\n                        case 1: x = Math.cos(a); break;\n                        case 2: x = Math.tan(a); break;\n                        case 3: x = Math.asin(a); break;\n                        case 4: x = Math.acos(a); break;\n                        case 5: x = Math.atan(a); break;\n                        case 6: x = Math.sinh(a); break;\n                        case 7: x = Math.cosh(a); break;\n                        case 8: x = Math.tanh(a); break;\n                        case 9: x = Math.abs(a); break;\n                        case 10: x = Math.sqrt(a); break;\n                        case 11: x = Math.cbrt(a); break;\n                        case 12: x = Math.floor(a); break;\n                        case 13: x = Math.ceil(a); break;\n                        case 14: x = Math.round(a); break;\n                        case 15: x = Math.sign(a); break;\n                        case 16: x = Math.exp(a); break;\n                        case 17: x = Math.log(a); break;\n                        case 18: x = Math.log10(a); break;\n                        case 19: x = Math.log2(a); break;\n                        case 20: x = Math.pow(a, b); break;\n                        case 21: {\n                            x = Infinity;\n                            for (let j = 0; j < argc; j++) if (stack[base + j] < x) x = stack[base + j];\n                            break;\n                        }\n                        case 22: {\n                            x = -Infinity;\n                            for (let j = 0; j < argc; j++) if (stack[base + j] > x) x = stack[base + j];\n                            break;\n                        }\n                        case 23: x = a < b ? b : (a > c ? c : a); break;\n                        case 24: x = this.mod(a, b); break;\n                        case 25: {\n                            let n = Math.round(a || 0);\n                            if (n < 0) n = 0; else if (n > 127) n = 127;\n                            x = cc ? cc[n] : 0;\n                            break;\n                        }\n                        case 26: x = Math.random() * 2 - 1; break;\n                        case 27: {\n                            const f = argc > 0 ? a : v.freq;\n                            const tt = argc > 1 ? b : v.t;\n                            const phase = this.mod(f * tt, 1);\n                            const dt = Math.min(0.999, Math.abs(f) * this.invSampleRate);\n                            x = (phase * 2 - 1) - this.polyBlep(phase, dt);\n                            break;\n                        }\n                        case 28:\n                        case 29: {\n                            const f = argc > 0 ? a : v.freq;\n                            const tt = argc > 1 ? b : v.t;\n                            let duty = argc > 2 ? c : 0.5;\n                            if (duty < 0.01) duty = 0.01; else if (duty > 0.99) duty = 0.99;\n                            const phase = this.mod(f * tt, 1);\n                            const dt = Math.min(0.999, Math.abs(f) * this.invSampleRate);\n                            x = phase < duty ? 1 : -1;\n                            x += this.polyBlep(phase, dt);\n                            x -= this.polyBlep(this.mod(phase - duty, 1), dt);\n                            break;\n                        }\n                        case 30: {\n                            const f = argc > 0 ? a : v.freq;\n                            const tt = argc > 1 ? b : v.t;\n                            x = 1 - 4 * Math.abs(this.mod(f * tt, 1) - 0.5);\n                            break;\n                        }\n                    }\n                    sp = base;\n                    stack[sp++] = x;\n                    break;\n                }\n                case 11: stack[sp++] = locals[a0 | 0] || 0; break;\n                case 12: {\n                    const x = sp ? stack[sp - 1] : 0;\n                    locals[a0 | 0] = x;\n                    const out = b0 | 0;\n                    if (out === 1) wave = x;\n                    else if (out === 2) pan = x;\n                    else if (out === 3) lLimit = x;\n                    sp = 0;\n                    break;\n                }\n            }\n        }\n\n        this.outWave = Number.isFinite(wave) ? wave : 0;\n        if (Number.isFinite(pan)) {\n            this.outPan = pan < -1 ? -1 : (pan > 1 ? 1 : pan);\n        } else this.outPan = 0;\n        if (Number.isFinite(lLimit)) {\n            this.outLLimit = lLimit < 0 ? 0 : (lLimit > this.maxLLimit ? this.maxLLimit : lLimit);\n        } else this.outLLimit = this.defaultRelease;\n    }\n\n    updateVoiceNormTarget() {\n        const count = this.liveVoiceCount > 0 ? this.liveVoiceCount : 1;\n        this.voiceNormTarget = count > 1 ? 1 / Math.sqrt(count) : 1;\n    }\n\n    endVoice(v) {\n        if (!v || v.dead) return;\n        v.dead = true;\n        this.voiceById.delete(v.id);\n        if (this.liveVoiceCount > 0) this.liveVoiceCount--;\n        this.voicesDirty = true;\n        this.updateVoiceNormTarget();\n        this.endedIds.push(v.id);\n    }\n\n    compactVoices() {\n        if (!this.voicesDirty) return;\n        const src = this.voices;\n        let w = 0;\n        for (let r = 0; r < src.length; r++) {\n            const v = src[r];\n            if (!v.dead) src[w++] = v;\n        }\n        src.length = w;\n        this.voicesDirty = false;\n    }\n\n    stealVoice() {\n        const vs = this.voices;\n        let candidate = null;\n        for (let i = 0; i < vs.length; i++) {\n            const v = vs[i];\n            if (v.dead) continue;\n            if (!candidate || (v.released && !candidate.released) ||\n                (v.released === candidate.released && v.birthFrame < candidate.birthFrame)) candidate = v;\n        }\n        if (candidate) this.endVoice(candidate);\n    }\n\n    releaseVoice(v) {\n        if (!v || v.dead || v.released) return;\n        v.released = true;\n        v.l = 0;\n    }\n\n    applyEvent(event, frame) {\n        if (event.type === 'noteOn') {\n            if (this.liveVoiceCount >= this.maxVoices) this.stealVoice();\n            const baseFreq = Math.max(0.001, Number(event.freq) || 440);\n            const detuneCents = Number(event.detuneCents) || 0;\n            const midiState = this.getMidiState(event.midiKey);\n            const age = Math.max(0, Number(event.ageSeconds) || 0);\n            const noteNumber = Number.isFinite(event.noteNumber) ? event.noteNumber : -1;\n            const v = {\n                id: event.id,\n                baseFreq,\n                freq: baseFreq * Math.pow(2, detuneCents / 1200),\n                velocity: Math.max(0, Math.min(1, Number(event.velocity) || 0)),\n                noteNumber,\n                noteIndex: noteNumber >= 0 ? (noteNumber & 0x7f) : 0,\n                detuneCents,\n                midiKey: event.midiKey || null,\n                midiState,\n                channel1: (Number.isFinite(event.channel) ? event.channel : 0) + 1,\n                birthFrame: frame - age * sampleRate,\n                endFrame: Number.isFinite(event.endFrame) ? Math.max(frame, event.endFrame) : Infinity,\n                fallbackRelease: Math.max(0.001, Math.min(this.maxLLimit, Number(event.releaseSeconds) || this.defaultRelease)),\n                released: false,\n                dead: false,\n                t: age,\n                l: 0\n            };\n            // Retrigger with same id should replace cleanly.\n            const old = this.voiceById.get(event.id);\n            if (old) this.endVoice(old);\n            this.voices.push(v);\n            this.voiceById.set(v.id, v);\n            this.liveVoiceCount++;\n            this.updateVoiceNormTarget();\n            return;\n        }\n        if (event.type === 'noteOff') { this.releaseVoice(this.voiceById.get(event.id)); return; }\n        if (event.type === 'kill') { this.endVoice(this.voiceById.get(event.id)); return; }\n        if (event.type === 'midiReset') {\n            const state = this.midiChannels.get(event.midiKey);\n            if (state) {\n                state.cc.fill(0); state.cc[7] = 1; state.cc[10] = 64 / 127; state.cc[11] = 1;\n                state.polyPressure.fill(0);\n                state.bend = 0; state.bendSemitones = 0; state.pressure = 0; state.program = 0;\n            }\n            return;\n        }\n        if (event.type === 'pitch') {\n            const state = this.getMidiState(event.midiKey);\n            if (state) {\n                state.bend = Math.max(-1, Math.min(1, Number(event.bend) || 0));\n                state.bendSemitones = Number(event.bendSemitones) || 0;\n            }\n            const detuneCents = Number(event.detuneCents) || 0;\n            const scale = Math.pow(2, detuneCents / 1200);\n            const vs = this.voices;\n            for (let i = 0; i < vs.length; i++) {\n                const v = vs[i];\n                if (!v.dead && v.midiKey === event.midiKey) {\n                    v.detuneCents = detuneCents;\n                    v.freq = v.baseFreq * scale;\n                }\n            }\n            return;\n        }\n        if (event.type === 'midiCC') {\n            const state = this.getMidiState(event.midiKey);\n            if (state) {\n                let n = event.controller | 0; if (n < 0) n = 0; else if (n > 127) n = 127;\n                let x = Number(event.value) || 0; if (x < 0) x = 0; else if (x > 1) x = 1;\n                state.cc[n] = x;\n            }\n            return;\n        }\n        if (event.type === 'pressure') {\n            const state = this.getMidiState(event.midiKey); if (state) state.pressure = Math.max(0, Math.min(1, Number(event.value) || 0)); return;\n        }\n        if (event.type === 'program') {\n            const state = this.getMidiState(event.midiKey); if (state) state.program = Math.max(0, Math.min(127, Number(event.value) || 0)); return;\n        }\n        if (event.type === 'polyPressure') {\n            const state = this.getMidiState(event.midiKey);\n            if (state) state.polyPressure[event.noteNumber & 0x7f] = Math.max(0, Math.min(1, Number(event.value) || 0));\n        }\n    }\n\n    process(inputs, outputs) {\n        const output = outputs[0];\n        if (!output || !output.length) return true;\n        const left = output[0];\n        const right = output.length > 1 ? output[1] : null;\n        const frames = left.length;\n        const events = this.events;\n        const voices = this.voices;\n        const dt = this.invSampleRate;\n        const hasPan = this.hasPan;\n        const hasLLimit = this.hasLLimit;\n        const legacyImplicit = this.legacyImplicit;\n        const sqrtHalf = Math.SQRT1_2;\n        let eventIndex = 0;\n\n        for (let i = 0; i < frames; i++) {\n            const frame = currentFrame + i;\n            while (eventIndex < events.length && events[eventIndex].frame <= frame) this.applyEvent(events[eventIndex++], frame);\n\n            const normDelta = this.voiceNormTarget - this.voiceNorm;\n            this.voiceNorm += normDelta * (normDelta < 0 ? this.normAttack : this.normRelease);\n            const norm = this.voiceNorm;\n\n            let mixL = 0, mixR = 0;\n            for (let vi = 0; vi < voices.length; vi++) {\n                const v = voices[vi];\n                if (v.dead) continue;\n                if (!v.released && frame >= v.endFrame) this.releaseVoice(v);\n\n                let wave;\n                let outPan, outLLimit;\n                if (this.jit) {\n                    wave = this.jit(v, v.midiState, this);\n                    outPan = v._pan || 0;\n                    outLLimit = Number.isFinite(v._ll) ? v._ll : this.defaultRelease;\n                } else {\n                    this.evaluateProgram(v);\n                    wave = this.outWave;\n                    outPan = this.outPan;\n                    outLLimit = this.outLLimit;\n                }\n                if (legacyImplicit) wave *= v.velocity;\n\n                if (v.released) {\n                    if (hasLLimit) {\n                        if (v.l >= outLLimit) { this.endVoice(v); continue; }\n                    } else {\n                        const limit = v.fallbackRelease;\n                        if (v.l >= limit) { this.endVoice(v); continue; }\n                        wave *= 1 - v.l / limit;\n                    }\n                }\n\n                if (Number.isFinite(wave)) {\n                    wave *= norm;\n                    if (!hasPan) {\n                        const x = wave * sqrtHalf;\n                        mixL += x; mixR += x;\n                    } else {\n                        const angle = (outPan + 1) * Math.PI * 0.25;\n                        mixL += wave * Math.cos(angle);\n                        mixR += wave * Math.sin(angle);\n                    }\n                }\n\n                v.t += dt;\n                if (v.released) v.l += dt;\n            }\n\n            if (!Number.isFinite(mixL)) mixL = 0;\n            if (!Number.isFinite(mixR)) mixR = 0;\n            if (right) { left[i] = mixL; right[i] = mixR; }\n            else left[i] = (mixL + mixR) * sqrtHalf;\n        }\n\n        if (eventIndex) events.splice(0, eventIndex);\n        this.compactVoices();\n        if (this.endedIds.length) {\n            this.port.postMessage({ type: 'endedBatch', ids: this.endedIds });\n            this.endedIds = [];\n        }\n        return true;\n    }\n}\nregisterProcessor('math-synth-processor', MathSynthProcessor);\n";
+
+    async function initAudioWorklet() {
+        if (synthNode) return synthNode;
+        if (workletReadyPromise) return workletReadyPromise;
+        workletReadyPromise = (async () => {
+            if (!audioCtx.audioWorklet) throw new Error('AudioWorkletに対応していないブラウザです');
+            const blob = new Blob([WORKLET_SOURCE], { type: 'text/javascript' });
+            const url = URL.createObjectURL(blob);
+            try { await audioCtx.audioWorklet.addModule(url); }
+            finally { URL.revokeObjectURL(url); }
+            synthNode = new AudioWorkletNode(audioCtx, 'math-synth-processor', {
+                numberOfInputs: 0,
+                numberOfOutputs: 1,
+                outputChannelCount: [2]
+            });
+            synthNode.connect(masterGain);
+            synthNode.port.onmessage = (event) => {
+                const msg = event.data || {};
+                if (msg.type === 'engineMode') {
+                    if (engineVoiceBadge) engineVoiceBadge.title = `Expression engine: ${msg.mode}`;
+                    // console.info(`[Math Synth] Expression engine: ${msg.mode}`);
+                    return;
+                }
+                const endedIds = msg.type === 'endedBatch' && Array.isArray(msg.ids)
+                    ? msg.ids
+                    : (msg.type === 'ended' ? [msg.id] : null);
+                if (endedIds) {
+                    for (const endedId of endedIds) {
+                        const voice = activeVoices.get(endedId);
+                        if (voice?.note) updateNoteVisual(voice.note);
+                        activeVoices.delete(endedId);
+                        for (const set of midiSustainVoices.values()) set.delete(endedId);
+                        for (const queue of midiVoiceQueues.values()) {
+                            const idx = queue.indexOf(endedId);
+                            if (idx >= 0) queue.splice(idx, 1);
+                        }
+                        if (currentMainVoice === endedId) currentMainVoice = null;
+                    }
+                }
+            };
+            synthNode.port.postMessage({ type: 'config', releaseSeconds: releaseSeconds() });
+            if (activeProgram) synthNode.port.postMessage({ type: 'program', code: activeProgram });
+            syncAllMidiStatesToWorklet();
+            return synthNode;
+        })().catch(err => {
+            workletReadyPromise = null;
+            throw err;
+        });
+        return workletReadyPromise;
+    }
+
+    async function ensureAudioReady() {
+        const node = await initAudioWorklet();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        return node;
+    }
+
+    function eventTimestampToAudioTime(timestamp, lead = 0.004) {
+        if (!Number.isFinite(timestamp)) return audioCtx.currentTime + lead;
+        const mapped = audioCtx.currentTime + (timestamp - performance.now()) / 1000;
+        return Math.max(audioCtx.currentTime + lead, mapped + lead);
+    }
+
+    function scheduleVoice(id, freq, options = {}) {
+        if (!synthNode || !activeProgram || !currentExpressionValid) return false;
+        const startTime = Number.isFinite(options.audioTime)
+            ? Math.max(audioCtx.currentTime + 0.002, options.audioTime)
+            : eventTimestampToAudioTime(options.eventTimestamp);
+        const duration = Number.isFinite(options.duration) ? Math.max(0.001, options.duration) : null;
+        const voice = { id, note: options.note || null, midiKey: options.midiKey || null, sustained: false };
+        activeVoices.set(id, voice);
+        synthNode.port.postMessage({
+            type: 'noteOn', id, frame: audioFrameAt(startTime),
+            freq, velocity: clamp(options.velocity ?? 1, 0, 1),
+            noteNumber: options.noteNumber ?? -1,
+            detuneCents: Number(options.detuneCents) || 0,
+            midiKey: options.midiKey || null,
+            channel: Number.isFinite(options.channel) ? options.channel : 0,
+            ageSeconds: Math.max(0, Number(options.ageSeconds) || 0),
+            releaseSeconds: releaseSeconds(),
+            endFrame: duration == null ? null : audioFrameAt(startTime + duration)
+        });
+        if (voice.note) setNoteActiveState(voice.note, true);
+        return true;
+    }
+
+    async function startVoice(id, freq, options = {}) {
+        const code = compileCurrentExpression(true);
+        if (!code) return false;
+        try { await ensureAudioReady(); }
+        catch (err) { setMessage(`AudioWorklet初期化失敗: ${err.message}`, true); return false; }
+        return scheduleVoice(id, freq, options);
+    }
+
+    function stopVoice(id, audioTime = audioCtx.currentTime + 0.002) {
+        const voice = activeVoices.get(id);
+        if (!voice || !synthNode) return;
+        synthNode.port.postMessage({ type: 'noteOff', id, frame: audioFrameAt(audioTime) });
+        voice.releasing = true;
+    }
+
+    function stopMainPlayback() {
+        if (currentMainVoice) {
+            stopVoice(currentMainVoice);
+            currentMainVoice = null;
+        }
+    }
+    function stopAllVoices() {
+        pointerVoiceMap.clear();
+        keyboardVoiceMap.clear();
+        if (synthNode) synthNode.port.postMessage({ type: 'allOff' });
+        for (const voice of activeVoices.values()) voice.releasing = true;
+    }
+    function stopEverything() {
+        stopMidiPlayback(false);
+        stopMainPlayback();
+        stopAllVoices();
+    }
+
+    function removeVoiceFromSustainMap(midiKey, voiceId) {
+        const set = midiSustainVoices.get(midiKey);
+        if (!set) return;
+        set.delete(voiceId);
+        if (!set.size) midiSustainVoices.delete(midiKey);
+    }
+    function markVoiceForSustain(midiKey, voiceId) {
+        let set = midiSustainVoices.get(midiKey);
+        if (!set) { set = new Set(); midiSustainVoices.set(midiKey, set); }
+        set.add(voiceId);
+    }
+    function releaseSustainForKey(midiKey, audioTime = audioCtx.currentTime + 0.002) {
+        const set = midiSustainVoices.get(midiKey);
+        if (!set) return;
+        midiSustainVoices.delete(midiKey);
+        for (const id of set) stopVoice(id, audioTime);
+    }
+    function defaultMidiChannelState(channel = 0) {
+        const cc = new Uint8Array(128); cc[7] = 127; cc[10] = 64; cc[11] = 127;
+        return { channel, cc, bendRaw: MIDI_PITCH_CENTER, pressure: 0, program: 0, polyPressure: new Uint8Array(128) };
+    }
+    function getMidiChannelState(midiKey, channel = 0) {
+        let state = midiChannelStates.get(midiKey);
+        if (!state) { state = defaultMidiChannelState(channel); midiChannelStates.set(midiKey, state); }
+        return state;
+    }
+    function postMidiState(type, midiKey, channel, data = {}, audioTime = audioCtx.currentTime + 0.002) {
+        if (!synthNode) return;
+        synthNode.port.postMessage({ type, midiKey, channel, frame: audioFrameAt(audioTime), ...data });
+    }
+    function setMidiSustainState(midiKey, engaged, audioTime = audioCtx.currentTime + 0.002) {
+        midiSustainState.set(midiKey, engaged);
+        if (!engaged) releaseSustainForKey(midiKey, audioTime);
+    }
+    function updateMidiCC(midiKey, channel, controller, value, audioTime = audioCtx.currentTime + 0.002) {
+        const state = getMidiChannelState(midiKey, channel);
+        state.cc[controller & 0x7f] = value & 0x7f;
+        postMidiState('midiCC', midiKey, channel, { controller: controller & 0x7f, value: (value & 0x7f) / 127 }, audioTime);
+        if ((controller & 0x7f) === 64) setMidiSustainState(midiKey, (value & 0x7f) >= 64, audioTime);
+    }
+    function updatePitchForMidiKey(midiKey, rawValue, channel = 0, audioTime = audioCtx.currentTime + 0.002) {
+        const raw = clampPitchValue(rawValue);
+        const normalized = pitchValueToNormalized(raw);
+        const detuneCents = pitchValueToDetune(raw);
+        midiPitchRawState.set(midiKey, raw); midiPitchState.set(midiKey, detuneCents);
+        const state = getMidiChannelState(midiKey, channel); state.bendRaw = raw;
+        postMidiState('pitch', midiKey, channel, { detuneCents, bend: normalized, bendSemitones: detuneCents / 100 }, audioTime);
+    }
+    function updateMidiPressure(midiKey, channel, value, audioTime = audioCtx.currentTime + 0.002) {
+        const state = getMidiChannelState(midiKey, channel); state.pressure = value & 0x7f;
+        postMidiState('pressure', midiKey, channel, { value: (value & 0x7f) / 127 }, audioTime);
+    }
+    function updateMidiProgram(midiKey, channel, value, audioTime = audioCtx.currentTime + 0.002) {
+        const state = getMidiChannelState(midiKey, channel); state.program = value & 0x7f;
+        postMidiState('program', midiKey, channel, { value: value & 0x7f }, audioTime);
+    }
+    function updatePolyPressure(midiKey, channel, noteNumber, value, audioTime = audioCtx.currentTime + 0.002) {
+        const state = getMidiChannelState(midiKey, channel); state.polyPressure[noteNumber & 0x7f] = value & 0x7f;
+        postMidiState('polyPressure', midiKey, channel, { noteNumber: noteNumber & 0x7f, value: (value & 0x7f) / 127 }, audioTime);
+    }
+    function syncAllMidiStatesToWorklet() {
+        if (!synthNode) return;
+        const when = audioCtx.currentTime + 0.002;
+        for (const [midiKey, state] of midiChannelStates) {
+            for (let cc = 0; cc < 128; cc++) if (state.cc[cc] !== 0 || cc === 7 || cc === 10 || cc === 11) postMidiState('midiCC', midiKey, state.channel, {controller:cc, value:state.cc[cc]/127}, when);
+            updatePitchForMidiKey(midiKey, state.bendRaw, state.channel, when);
+            postMidiState('pressure', midiKey, state.channel, {value:state.pressure/127}, when);
+            postMidiState('program', midiKey, state.channel, {value:state.program}, when);
+        }
+    }
+
+    function updateExpressionPreview(value = exprInput.value) {
+        if (!exprPreview) return null;
+        const content = (value ?? '').trim();
+        exprPreview.innerHTML = '';
+        editorShell?.classList.remove('has-error');
+        if (!content) {
+            exprPreview.textContent = EXPRESSION_PLACEHOLDER;
+            if (editorDiagnosticEl) editorDiagnosticEl.textContent = 'wave = ... を入力してください';
+            return null;
+        }
+        try {
+            const p = compileProgram(content);
+            currentExpressionValid = true;
+            const row = document.createElement('div');
+            row.className = 'program-summary';
+            const addChip = (text, className = '') => {
+                const el = document.createElement('span');
+                el.className = `program-chip ${className}`.trim();
+                el.textContent = text;
+                row.appendChild(el);
+            };
+            addChip('✓ valid', 'output');
+            addChip(`${p.statements.length} defs`);
+            addChip('wave', 'output');
+            if (p.hasPan) addChip('pan', 'output');
+            if (p.hasLLimit) addChip('l_limit', 'output');
+            if (p.legacyImplicit) addChip('legacy');
+            exprPreview.appendChild(row);
+            const locals = p.sourceStatements.filter(x => !OUTPUT_NAMES.has(x.name)).map(x => x.name);
+            if (editorDiagnosticEl) {
+                editorDiagnosticEl.className = '';
+                editorDiagnosticEl.textContent = 'OK';
+            }
+            return p;
+        } catch (err) {
+            currentExpressionValid = false;
+            editorShell?.classList.add('has-error');
+            const el = document.createElement('span');
+            el.className = 'program-chip';
+            el.textContent = '× invalid';
+            exprPreview.appendChild(el);
+            if (editorDiagnosticEl) {
+                editorDiagnosticEl.className = 'error';
+                editorDiagnosticEl.textContent = err.message;
+            }
+            return null;
+        }
+    }
+
+
+    const AUTOCOMPLETE_BASE = [
+        {name:'t',insert:'t',detail:'押下からの時間 [s]'}, {name:'s',insert:'s',detail:'velocity [0..1]'}, {name:'l',insert:'l',detail:'releaseからの時間 [s]'},
+        {name:'freq',insert:'freq',detail:'pitch bend反映済み Hz'}, {name:'note',insert:'note',detail:'MIDI note number'}, {name:'ch',insert:'ch',detail:'MIDI channel 1..16'},
+        {name:'bend',insert:'bend',detail:'pitch bend -1..1'}, {name:'bend_st',insert:'bend_st',detail:'pitch bend semitones'},
+        {name:'mw',insert:'mw',detail:'CC1 mod wheel'}, {name:'vol',insert:'vol',detail:'CC7 volume'}, {name:'midi_pan',insert:'midi_pan',detail:'CC10 mapped -1..1'},
+        {name:'mexpr',insert:'mexpr',detail:'CC11 expression'}, {name:'sustain',insert:'sustain',detail:'CC64 pedal'}, {name:'pressure',insert:'pressure',detail:'channel pressure'},
+        {name:'poly_pressure',insert:'poly_pressure',detail:'polyphonic key pressure'}, {name:'program',insert:'program',detail:'program 0..127'},
+        {name:'wave',insert:'wave = ',detail:'必須 output',assignmentOnly:true}, {name:'pan',insert:'pan = ',detail:'-1..1 output',assignmentOnly:true}, {name:'l_limit',insert:'l_limit = ',detail:'release寿命[s]',assignmentOnly:true},
+        {name:'PI',insert:'PI',detail:'π'}, {name:'TAU',insert:'TAU',detail:'2π'}, {name:'E',insert:'E',detail:'Euler'}, {name:'PHI',insert:'PHI',detail:'golden ratio'},
+        {name:'cc',insert:'cc()',caret:-1,detail:'cc(controller) -> 0..1'},
+        {name:'sin',insert:'sin()',caret:-1,detail:'sin(x)'}, {name:'cos',insert:'cos()',caret:-1,detail:'cos(x)'}, {name:'tan',insert:'tan()',caret:-1,detail:'tan(x)'},
+        {name:'abs',insert:'abs()',caret:-1,detail:'abs(x)'}, {name:'sqrt',insert:'sqrt()',caret:-1,detail:'sqrt(x)'}, {name:'pow',insert:'pow(, )',caret:-3,detail:'pow(a,b)'},
+        {name:'exp',insert:'exp()',caret:-1,detail:'exp(x)'}, {name:'log',insert:'log()',caret:-1,detail:'ln(x)'}, {name:'clamp',insert:'clamp(, 0, 1)',caret:-7,detail:'clamp(x,min,max)'},
+        {name:'mod',insert:'mod(, )',caret:-3,detail:'positive modulo'}, {name:'saw',insert:'saw(freq, t)',detail:'PolyBLEP saw'}, {name:'square',insert:'square(freq, t, 0.5)',detail:'PolyBLEP square'},
+        {name:'pulse',insert:'pulse(freq, t, 0.5)',detail:'PolyBLEP pulse'}, {name:'triangle',insert:'triangle(freq, t)',detail:'triangle'}, {name:'noise',insert:'noise()',detail:'white noise'}
+    ];
+    let autocompleteItems = [];
+    let autocompleteIndex = 0;
+    let autocompleteRange = null;
+
+    function updateLineNumbers() {
+        if (!lineNumbersEl) return;
+        const count = Math.max(1, exprInput.value.split(/\n/).length);
+        lineNumbersEl.textContent = Array.from({length:count}, (_,i)=>String(i+1)).join('\n');
+        lineNumbersEl.scrollTop = exprInput.scrollTop;
+    }
+
+    function getCursorLineCol() {
+        const pos = exprInput.selectionStart || 0;
+        const before = exprInput.value.slice(0, pos);
+        const lines = before.split('\n');
+        return { line: lines.length, col: lines[lines.length - 1].length + 1, pos };
+    }
+
+    function updateCursorStatus() {
+        if (!cursorStatusEl) return;
+        const {line,col} = getCursorLineCol();
+        cursorStatusEl.textContent = `Ln ${line}, Col ${col}`;
+    }
+
+    function localCompletionItems(pos) {
+        const lineStart = exprInput.value.lastIndexOf('\n', pos - 1) + 1;
+        const before = exprInput.value.slice(0, lineStart);
+        const names = [];
+        for (const entry of splitProgramStatementsDetailed(before)) {
+            const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(entry.text);
+            if (!m) continue;
+            const name = m[1];
+            if (!OUTPUT_NAMES.has(name) && !ALLOWED_VARS.has(name) && !FUNCTION_ARITY.has(name) && !Object.prototype.hasOwnProperty.call(CONSTANTS,name)) {
+                if (!names.includes(name)) names.push(name);
+            }
+        }
+        return names.map(name => ({name, insert:name, detail:'local variable', kind:'local'}));
+    }
+
+    function getCompletionContext(force = false) {
+        const pos = exprInput.selectionStart || 0;
+        if (exprInput.selectionStart !== exprInput.selectionEnd) return null;
+        const lineStart = exprInput.value.lastIndexOf('\n', pos - 1) + 1;
+        const linePrefix = exprInput.value.slice(lineStart, pos);
+        const hash = linePrefix.indexOf('#');
+        const slash = linePrefix.indexOf('//');
+        if ((hash >= 0 || slash >= 0) && Math.min(hash >= 0 ? hash : Infinity, slash >= 0 ? slash : Infinity) < linePrefix.length) return null;
+        const word = /[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix);
+        const prefix = word ? word[0] : '';
+        if (!force && !prefix) return null;
+        const start = word ? pos - prefix.length : pos;
+        const assignmentPosition = !linePrefix.includes('=');
+        return { pos, start, end: pos, prefix, assignmentPosition };
+    }
+
+    function positionAutocomplete(ctx) {
+        if (!autocompleteEl) return;
+        const lineHeight = 20.15;
+        const charWidth = 7.8;
+        const before = exprInput.value.slice(0, ctx.pos).split('\n');
+        const line = before.length - 1;
+        const col = before[before.length - 1].length;
+        const left = 43 + 14 + col * charWidth - exprInput.scrollLeft;
+        const top = 12 + (line + 1) * lineHeight - exprInput.scrollTop;
+        const maxLeft = Math.max(52, editorShell.clientWidth - Math.min(360, editorShell.clientWidth - 56) - 8);
+        autocompleteEl.style.left = `${Math.max(48, Math.min(left, maxLeft))}px`;
+        autocompleteEl.style.top = `${Math.max(36, Math.min(top, editorShell.clientHeight - 34))}px`;
+    }
+
+    function renderAutocomplete(force = false) {
+        if (!autocompleteEl) return;
+        const ctx = getCompletionContext(force);
+        if (!ctx) { hideAutocomplete(); return; }
+        const prefix = ctx.prefix.toLowerCase();
+        const candidates = [...localCompletionItems(ctx.pos), ...AUTOCOMPLETE_BASE]
+            .filter(item => !item.assignmentOnly || ctx.assignmentPosition)
+            .filter(item => !prefix || item.name.toLowerCase().startsWith(prefix))
+            .filter((item, index, arr) => arr.findIndex(x => x.name === item.name) === index)
+            .slice(0, 14);
+        if (!candidates.length) { hideAutocomplete(); return; }
+        autocompleteItems = candidates;
+        autocompleteIndex = Math.min(autocompleteIndex, candidates.length - 1);
+        autocompleteRange = ctx;
+        autocompleteEl.innerHTML = '';
+        candidates.forEach((item, index) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `autocomplete-item${index === autocompleteIndex ? ' active' : ''}`;
+            btn.setAttribute('role','option');
+            btn.innerHTML = `<span class="autocomplete-name">${item.name}</span><span class="autocomplete-detail"></span>`;
+            btn.querySelector('.autocomplete-detail').textContent = item.detail;
+            btn.addEventListener('mousedown', e => { e.preventDefault(); applyAutocomplete(index); });
+            autocompleteEl.appendChild(btn);
+        });
+        positionAutocomplete(ctx);
+        autocompleteEl.hidden = false;
+        autocompleteEl.querySelector('.active')?.scrollIntoView({block:'nearest'});
+    }
+
+    function hideAutocomplete() {
+        if (autocompleteEl) autocompleteEl.hidden = true;
+        autocompleteItems = [];
+        autocompleteRange = null;
+        autocompleteIndex = 0;
+    }
+
+    function applyAutocomplete(index = autocompleteIndex) {
+        const item = autocompleteItems[index];
+        const range = autocompleteRange;
+        if (!item || !range) return;
+        exprInput.setRangeText(item.insert, range.start, range.end, 'end');
+        const end = range.start + item.insert.length;
+        const caret = Math.max(range.start, end + (item.caret || 0));
+        exprInput.setSelectionRange(caret, caret);
+        hideAutocomplete();
+        exprInput.dispatchEvent(new Event('input', {bubbles:true}));
+        exprInput.focus();
+    }
+
+    function insertAtCursor(text) {
+        const start = exprInput.selectionStart || 0;
+        const end = exprInput.selectionEnd || start;
+        exprInput.setRangeText(text, start, end, 'end');
+        exprInput.dispatchEvent(new Event('input', {bubbles:true}));
+        exprInput.focus();
+    }
+
+    function formatExpression() {
+        const value = exprInput.value;
+        if (/^\s*(#|\/\/)/m.test(value)) {
+            setMessage('コメントを保持するため、自動整形はコメントを含む式では行いません。');
+            return;
+        }
+        const entries = splitProgramStatementsDetailed(value);
+        if (!entries.length) return;
+        const out = entries.map(entry => {
+            const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(entry.text);
+            return m ? `${m[1]} = ${m[2].trim()}` : entry.text;
+        }).join('\n');
+        exprInput.value = out;
+        exprInput.dispatchEvent(new Event('input', {bubbles:true}));
+    }
+
+
+    let phaseLockedFrame = null;
+    const PHASE_VIEW_SAMPLES = 768;
+    const PHASE_CORR_POINTS = 128;
+
+    function phaseLockWaveform(data) {
+        if (!data || data.length < 64) return data;
+        const win = Math.min(PHASE_VIEW_SAMPLES, data.length - 16);
+        if (win < 32) return data;
+
+        let energy = 0;
+        for (let i = 0; i < data.length; i += 8) energy += data[i] * data[i];
+        if (energy < 1e-7) {
+            phaseLockedFrame = null;
+            return data.subarray(0, win);
+        }
+
+        let bestStart = 0;
+        if (phaseLockedFrame && phaseLockedFrame.length === win) {
+            let bestScore = -Infinity;
+            const maxStart = data.length - win;
+            const stride = Math.max(1, Math.floor(win / PHASE_CORR_POINTS));
+            for (let start = 0; start <= maxStart; start += 2) {
+                let dot = 0, aa = 0, bb = 0;
+                for (let j = 0; j < win; j += stride) {
+                    const a = data[start + j];
+                    const b = phaseLockedFrame[j];
+                    dot += a * b; aa += a * a; bb += b * b;
+                }
+                const score = dot / Math.sqrt(aa * bb + 1e-12);
+                if (score > bestScore) { bestScore = score; bestStart = start; }
+            }
+        } else {
+            // First frame: choose a strong rising zero crossing as phase 0.
+            let bestSlope = -Infinity;
+            const maxStart = data.length - win;
+            for (let i = 1; i <= maxStart; i++) {
+                if (data[i - 1] <= 0 && data[i] > 0) {
+                    const slope = data[i] - data[i - 1];
+                    if (slope > bestSlope) { bestSlope = slope; bestStart = i; }
+                }
+            }
+        }
+
+        const out = new Float32Array(win);
+        out.set(data.subarray(bestStart, bestStart + win));
+        phaseLockedFrame = out;
+        return out;
+    }
+
+    function drawArrayData(data) {
+        if (!canvas || !ctx) return;
+        const w = canvas.width, h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.strokeStyle = COLOR_BASELINE;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+        if (!data || !data.length) return;
+        ctx.strokeStyle = COLOR_WAVE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < data.length; i++) {
+            const x = (i / Math.max(1, data.length - 1)) * w;
+            const y = h / 2 - clamp(data[i], -1.5, 1.5) * (h / 2) * 0.85;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    function evalCallMain(name, args, env, sr) {
+        const a = args[0], b = args[1], c = args[2];
+        const mod = (x, y) => y === 0 ? 0 : ((x % y) + y) % y;
+        const polyBlep = (t, dt) => {
+            if (!(dt > 0) || dt >= 1) return 0;
+            if (t < dt) { const x = t / dt; return x + x - x * x - 1; }
+            if (t > 1 - dt) { const x = (t - 1) / dt; return x * x + x + x + 1; }
+            return 0;
+        };
+        const simple = { sin:Math.sin, cos:Math.cos, tan:Math.tan, asin:Math.asin, acos:Math.acos, atan:Math.atan,
+            sinh:Math.sinh, cosh:Math.cosh, tanh:Math.tanh, abs:Math.abs, sqrt:Math.sqrt, cbrt:Math.cbrt,
+            floor:Math.floor, ceil:Math.ceil, round:Math.round, sign:Math.sign, exp:Math.exp, log:Math.log,
+            log10:Math.log10, log2:Math.log2 };
+        if (simple[name]) return simple[name](a);
+        if (name === 'pow') return Math.pow(a,b);
+        if (name === 'min') return Math.min(...args);
+        if (name === 'max') return Math.max(...args);
+        if (name === 'clamp') return Math.min(c, Math.max(b,a));
+        if (name === 'mod') return mod(a,b);
+        if (name === 'cc') return env.cc ? (env.cc[Math.max(0,Math.min(127,Math.round(a||0)))] || 0) : 0;
+        if (name === 'noise') return Math.random()*2-1;
+        if (name === 'triangle') { const f=args.length?a:env.freq, tt=args.length>1?b:env.t; return 1-4*Math.abs(mod(f*tt,1)-0.5); }
+        if (name === 'saw') {
+            const f=args.length?a:env.freq, tt=args.length>1?b:env.t, p=mod(f*tt,1), dt=Math.min(.999,Math.abs(f)/sr);
+            return p*2-1-polyBlep(p,dt);
+        }
+        if (name === 'pulse' || name === 'square') {
+            const f=args.length?a:env.freq, tt=args.length>1?b:env.t, duty=clamp(args.length>2?c:.5,.01,.99), p=mod(f*tt,1), dt=Math.min(.999,Math.abs(f)/sr);
+            return (p<duty?1:-1)+polyBlep(p,dt)-polyBlep(mod(p-duty,1),dt);
+        }
+        return 0;
+    }
+
+    function readProgramVarMain(name, env) {
+        if (name === 't' || name === 'time') return env.t;
+        if (name === 's' || name === 'velocity') return env.s;
+        if (name === 'l') return env.l;
+        if (name === 'freq') return env.freq;
+        if (name === 'note' || name === 'noteNumber') return env.note;
+        return ({ch:env.ch,bend:env.bend,bend_st:env.bend_st,mw:env.mw,vol:env.vol,midi_pan:env.midi_pan,mexpr:env.mexpr,sustain:env.sustain,pressure:env.pressure,poly_pressure:env.poly_pressure,program:env.program}[name]) ?? 0;
+    }
+
+    function evaluateCodeMain(code, env, sr, locals) {
+        const stack = [];
+        for (const ins of code) {
+            if (ins[0] === 0) stack.push(ins[1]);
+            else if (ins[0] === 1) stack.push(readProgramVarMain(ins[1], env));
+            else if (ins[0] === 11) stack.push(locals[ins[1]] || 0);
+            else if (ins[0] === 2) stack.push(-stack.pop());
+            else if (ins[0] === 3) stack.push(+stack.pop());
+            else if (ins[0] >= 4 && ins[0] <= 9) {
+                const b=stack.pop(), a=stack.pop();
+                stack.push(ins[0]===4?a+b:ins[0]===5?a-b:ins[0]===6?a*b:ins[0]===7?a/b:ins[0]===8?a%b:Math.pow(a,b));
+            } else if (ins[0] === 10) {
+                const argc=ins[2], args=stack.splice(stack.length-argc,argc);
+                stack.push(evalCallMain(ins[1],args,env,sr));
+            }
+        }
+        const v=stack.length?stack[stack.length-1]:0;
+        return Number.isFinite(v)?v:0;
+    }
+
+    function evaluateProgramMain(program, env, sr) {
+        const locals = new Float64Array(Math.max(1, program.slots || 1));
+        let wave = 0, pan = 0, lLimit = releaseSeconds();
+        for (const st of program.statements) {
+            const value = evaluateCodeMain(st.code, env, sr, locals);
+            locals[st.slot] = value;
+            if (st.output === 'wave') wave = value;
+            else if (st.output === 'pan') pan = value;
+            else if (st.output === 'l_limit') lLimit = value;
+        }
+        if (program.legacyImplicit) wave *= env.s;
+        return {
+            wave: Number.isFinite(wave) ? wave : 0,
+            pan: Number.isFinite(pan) ? clamp(pan, -1, 1) : 0,
+            l_limit: Number.isFinite(lLimit) ? clamp(lLimit, 0, 30) : releaseSeconds()
+        };
+    }
+
+    function renderPlot() {
+        const program = compileCurrentExpression(false);
+        if (!program) return;
+        const freq = clamp(Number(freqInput.value) || 440, 1, 20000);
+        const sr = audioCtx.sampleRate;
+        const len = analyserData.length;
+        const data = new Float32Array(len);
+        let peak = 0;
+        for (let i=0;i<len;i++) {
+            const t=i/sr;
+            const result=evaluateProgramMain(program,{t,s:1,l:0,freq,note:69,ch:1,bend:0,bend_st:0,mw:0,vol:1,midi_pan:0,mexpr:1,sustain:0,pressure:0,poly_pressure:0,program:0,cc:(()=>{const x=new Float64Array(128);x[7]=1;x[10]=64/127;x[11]=1;return x;})()},sr);
+            const v=result.wave*(Number(gainInput.value)||1);
+            data[i]=v; peak=Math.max(peak,Math.abs(v));
+        }
+        lastPlotArray=data;
+        drawArrayData(data);
+        setMessage('');
+    }
+
+    function drawLoop(now) {
+        requestAnimationFrame(drawLoop);
+        if (now - lastMonitorUpdate < 1000 / MONITOR_MAX_FPS) return;
+        lastMonitorUpdate = now;
+        updateMidiTimeline();
+        if (engineVoiceBadge) engineVoiceBadge.textContent = `${activeVoices.size} voice${activeVoices.size === 1 ? '' : 's'}`;
+        const hasActive = Array.from(activeVoices.values()).some(v => !v.releasing);
+        if (audioCtx.state === 'running' && (activeVoices.size || midiState.playing || currentMainVoice)) {
+            analyser.getFloatTimeDomainData(analyserData);
+            drawArrayData(phaseLockWaveform(analyserData));
+        } else if (lastPlotArray) { phaseLockedFrame = null; drawArrayData(lastPlotArray); }
+        else drawArrayData(idleData);
+    }
+
+    const NOTE_SEQUENCE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const FLAT_TO_SHARP = { Db:'C#', Eb:'D#', Gb:'F#', Ab:'G#', Bb:'A#' };
+    function normalizeNoteName(note) {
+        if (!note) return null;
+        const m=/^([A-Ga-g])([#b]?)(-?\d+)$/.exec(note.trim());
+        if (!m) return null;
+        const base=m[1].toUpperCase(); let symbol=base+(m[2]||'');
+        if (symbol.endsWith('b')) symbol=FLAT_TO_SHARP[base+'b']||base;
+        if (!NOTE_SEQUENCE.includes(symbol)) return null;
+        return `${symbol}${parseInt(m[3],10)}`;
+    }
+    function noteToMidi(note) {
+        const normalized=normalizeNoteName(note); if (!normalized) return null;
+        const m=/^([A-G]#?)(-?\d+)$/.exec(normalized); if (!m) return null;
+        return (parseInt(m[2],10)+1)*12+NOTE_SEQUENCE.indexOf(m[1]);
+    }
+    function midiToNoteName(midi) { return `${NOTE_SEQUENCE[((midi%12)+12)%12]}${Math.floor(midi/12)-1}`; }
+    function noteToFrequency(note) {
+        const midi=typeof note==='number'?note:noteToMidi(note); if (midi==null) return null;
+        return 440*Math.pow(2,(midi-69)/12);
+    }
+
+    const KEYBOARD_LAYOUT_BASE = [
+        {key:'a',note:'C4'},{key:'w',note:'C#4'},{key:'s',note:'D4'},{key:'e',note:'D#4'},{key:'d',note:'E4'},
+        {key:'f',note:'F4'},{key:'t',note:'F#4'},{key:'g',note:'G4'},{key:'y',note:'G#4'},{key:'h',note:'A4'},
+        {key:'u',note:'A#4'},{key:'j',note:'B4'},{key:'k',note:'C5'},{key:'o',note:'C#5'},{key:'l',note:'D5'},
+        {key:'p',note:'D#5'},{key:';',note:'E5'},{key:"'",note:'F5'}
+    ];
+    const KEYBOARD_LAYOUT=KEYBOARD_LAYOUT_BASE.map(x=>({key:x.key,note:normalizeNoteName(x.note)})).filter(x=>x.note);
+    const KEYBOARD_NOTES=Array.from(new Set(KEYBOARD_LAYOUT.map(x=>x.note))).sort((a,b)=>noteToMidi(a)-noteToMidi(b));
+    const keyLookup=new Map(KEYBOARD_LAYOUT.map(x=>[x.key,x]));
+
+    function setNoteActiveState(note, active) {
+        const el=noteElements.get(normalizeNoteName(note)); if (!el) return;
+        el.classList.toggle('active',!!active);
+    }
+    function updateNoteVisual(note) {
+        const n=normalizeNoteName(note); if (!n) return;
+        setNoteActiveState(n,Array.from(activeVoices.values()).some(v=>v.note===n && !v.releasing));
+    }
+
+    function attachPointerEvents(btn,note) {
+        btn.addEventListener('pointerdown',async e=>{
+            e.preventDefault(); btn.setPointerCapture(e.pointerId);
+            if (pointerVoiceMap.has(e.pointerId)) return;
+            const id=nextVoiceId('ptr');
+            if (await startVoice(id,noteToFrequency(note),{note,noteNumber:noteToMidi(note),velocity:1,eventTimestamp:e.timeStamp})) {
+                pointerVoiceMap.set(e.pointerId,id); setMessage(`${note} (${noteToFrequency(note).toFixed(2)} Hz)`);
+            }
+        });
+        const release=e=>{ const id=pointerVoiceMap.get(e.pointerId); if(!id)return; pointerVoiceMap.delete(e.pointerId); stopVoice(id); };
+        btn.addEventListener('pointerup',e=>{try{btn.releasePointerCapture(e.pointerId)}catch(_){} release(e);});
+        btn.addEventListener('pointercancel',release);
+    }
+
+    function renderVirtualKeyboard() {
+        keyboardContainer.innerHTML=''; noteElements.clear();
+        const wrapper=document.createElement('div'); wrapper.className='piano-wrapper';
+        const whites=document.createElement('div'); whites.className='piano-whites'; wrapper.appendChild(whites); keyboardContainer.appendChild(wrapper);
+        const whiteNotes=KEYBOARD_NOTES.filter(n=>!n.includes('#')); wrapper.style.width=`${whiteNotes.length*48}px`; wrapper.style.height='150px';
+        const whiteIndex=new Map();
+        whiteNotes.forEach((note,idx)=>{
+            const btn=document.createElement('button'); btn.type='button'; btn.className='key white'; btn.dataset.note=note;
+            const label=document.createElement('span'); label.className='note-label'; label.textContent=note; btn.appendChild(label);
+            const mapping=KEYBOARD_LAYOUT.find(x=>x.note===note); if(mapping){const k=document.createElement('span');k.className='key-label';k.textContent=mapping.key.toUpperCase();btn.appendChild(k);}
+            attachPointerEvents(btn,note); whites.appendChild(btn); noteElements.set(note,btn); whiteIndex.set(note,idx);
+        });
+        KEYBOARD_NOTES.filter(n=>n.includes('#')).forEach(note=>{
+            const btn=document.createElement('button'); btn.type='button'; btn.className='key black'; btn.dataset.note=note;
+            const label=document.createElement('span'); label.className='note-label'; label.textContent=note; btn.appendChild(label);
+            const mapping=KEYBOARD_LAYOUT.find(x=>x.note===note); if(mapping){const k=document.createElement('span');k.className='key-label';k.textContent=mapping.key.toUpperCase();btn.appendChild(k);}
+            attachPointerEvents(btn,note); noteElements.set(note,btn);
+            const m=/^([A-G])#(-?\d+)$/.exec(note); if(m){const base=normalizeNoteName(`${m[1]}${m[2]}`);const idx=whiteIndex.get(base);if(idx!==undefined)btn.style.left=`${idx*48+32}px`;}
+            wrapper.appendChild(btn);
+        });
+    }
+
+function parseMidiFile(arrayBuffer) {
+            const dataView = new DataView(arrayBuffer);
+            let offset = 0;
+            const byteLength = dataView.byteLength;
+
+            const ensureLength = (needed) => {
+                if (offset + needed > byteLength) {
+                    throw new Error('Unexpected end of MIDI file');
+                }
+            };
+
+            const readString = (length) => {
+                ensureLength(length);
+                let result = '';
+                for (let i = 0; i < length; i++) {
+                    result += String.fromCharCode(dataView.getUint8(offset + i));
+                }
+                offset += length;
+                return result;
+            };
+
+            const readUint32 = () => {
+                ensureLength(4);
+                const value = dataView.getUint32(offset, false);
+                offset += 4;
+                return value;
+            };
+
+            const readUint16 = () => {
+                ensureLength(2);
+                const value = dataView.getUint16(offset, false);
+                offset += 2;
+                return value;
+            };
+
+            const chunkType = readString(4);
+            if (chunkType !== 'MThd') {
+                throw new Error('Invalid MIDI file: missing header');
+            }
+            const headerLength = readUint32();
+            if (headerLength < 6) {
+                throw new Error('Invalid MIDI header length');
+            }
+            const headerEnd = offset + headerLength;
+            const format = readUint16();
+            const trackCount = readUint16();
+            const division = readUint16();
+            offset = headerEnd;
+
+            if (division & 0x8000) {
+                throw new Error('SMPTE time division is not supported');
+            }
+            const ticksPerBeat = division;
+            if (ticksPerBeat <= 0) {
+                throw new Error('Invalid ticks-per-beat value');
+            }
+
+            const notes = [];
+            const tempoEvents = [];
+            const controlEvents = [];
+            let maxTick = 0;
+
+            const parseTrack = (trackView) => {
+                let localOffset = 0;
+                const localLength = trackView.byteLength;
+                let absoluteTick = 0;
+                let runningStatus = null;
+                const trackNotes = [];
+                const trackTempos = [];
+                const trackControls = [];
+                const activeNotes = new Map();
+
+                const ensureLocal = (needed) => {
+                    if (localOffset + needed > localLength) {
+                        throw new Error('Unexpected end of track data');
+                    }
+                };
+
+                const readVarLen = () => {
+                    let value = 0;
+                    for (let i = 0; i < 5; i++) {
+                        ensureLocal(1);
+                        const byte = trackView.getUint8(localOffset++);
+                        value = (value << 7) | (byte & 0x7f);
+                        if ((byte & 0x80) === 0) break;
+                    }
+                    return value;
+                };
+
+                while (localOffset < localLength) {
+                    const delta = readVarLen();
+                    absoluteTick += delta;
+                    if (absoluteTick > maxTick) {
+                        maxTick = absoluteTick;
+                    }
+                    ensureLocal(1);
+                    let statusByte = trackView.getUint8(localOffset);
+                    if (statusByte & 0x80) {
+                        runningStatus = statusByte;
+                        localOffset++;
+                    } else if (runningStatus != null) {
+                        statusByte = runningStatus;
+                    } else {
+                        throw new Error('Invalid MIDI running status state');
+                    }
+
+                    if (statusByte === 0xFF) {
+                        ensureLocal(1);
+                        const metaType = trackView.getUint8(localOffset++);
+                        const length = readVarLen();
+                        ensureLocal(length);
+                        if (metaType === 0x51 && length === 3) {
+                            const a = trackView.getUint8(localOffset);
+                            const b = trackView.getUint8(localOffset + 1);
+                            const c = trackView.getUint8(localOffset + 2);
+                            const microsecondsPerBeat = (a << 16) | (b << 8) | c;
+                            trackTempos.push({ tick: absoluteTick, microsecondsPerBeat });
+                        } else if (metaType === 0x2F) {
+                            // End of track
+                            localOffset += length;
+                            break;
+                        }
+                        localOffset += length;
+                        continue;
+                    }
+
+                    if (statusByte === 0xF0 || statusByte === 0xF7) {
+                        const length = readVarLen();
+                        ensureLocal(length);
+                        localOffset += length;
+                        continue;
+                    }
+
+                    const eventType = statusByte & 0xF0;
+                    const channel = statusByte & 0x0F;
+
+                    const readDataByte = () => {
+                        ensureLocal(1);
+                        return trackView.getUint8(localOffset++);
+                    };
+
+                    if (eventType === 0x90 || eventType === 0x80) {
+                        const noteNumber = readDataByte();
+                        const velocity = readDataByte();
+                        const key = (channel << 8) | noteNumber;
+                        if (eventType === 0x90 && velocity > 0) {
+                            let stack = activeNotes.get(key);
+                            if (!stack) {
+                                stack = [];
+                                activeNotes.set(key, stack);
+                            }
+                            stack.push({ startTick: absoluteTick, velocity, noteNumber, channel });
+                        } else {
+                            const stack = activeNotes.get(key);
+                            const noteOn = stack && stack.pop();
+                            if (noteOn) {
+                                trackNotes.push({
+                                    startTick: noteOn.startTick,
+                                    endTick: absoluteTick,
+                                    velocity: noteOn.velocity,
+                                    noteNumber,
+                                    channel
+                                });
+                            }
+                        }
+                    } else if (eventType === 0xB0) {
+                        const controller = readDataByte() & 0x7f;
+                        const value = readDataByte() & 0x7f;
+                        trackControls.push({ tick:absoluteTick, kind:'cc', controller, value, channel });
+                    } else if (eventType === 0xE0) {
+                        const lsb = readDataByte() & 0x7f, msb = readDataByte() & 0x7f;
+                        trackControls.push({ tick:absoluteTick, kind:'pitch', value:lsb | (msb << 7), channel });
+                    } else if (eventType === 0xC0) {
+                        trackControls.push({ tick:absoluteTick, kind:'program', value:readDataByte() & 0x7f, channel });
+                    } else if (eventType === 0xD0) {
+                        trackControls.push({ tick:absoluteTick, kind:'pressure', value:readDataByte() & 0x7f, channel });
+                    } else if (eventType === 0xA0) {
+                        const noteNumber = readDataByte() & 0x7f, value = readDataByte() & 0x7f;
+                        trackControls.push({ tick:absoluteTick, kind:'polyPressure', noteNumber, value, channel });
+                    } else {
+                        localOffset += 2;
+                    }
+                }
+
+                activeNotes.forEach((stack) => {
+                    while (stack.length) {
+                        const noteOn = stack.pop();
+                        trackNotes.push({
+                            startTick: noteOn.startTick,
+                            endTick: absoluteTick,
+                            velocity: noteOn.velocity,
+                            noteNumber: noteOn.noteNumber,
+                            channel: noteOn.channel
+                        });
+                    }
+                });
+
+                return { notes: trackNotes, tempoEvents: trackTempos, controlEvents: trackControls, maxTick: absoluteTick };
+            };
+
+            for (let i = 0; i < trackCount; i++) {
+                if (offset >= byteLength) break;
+                const type = readString(4);
+                const length = readUint32();
+                ensureLength(length);
+                if (type !== 'MTrk') {
+                    offset += length;
+                    continue;
+                }
+                const trackView = new DataView(arrayBuffer, offset, length);
+                offset += length;
+                const trackResult = parseTrack(trackView);
+                trackResult.notes.forEach((note) => {
+                    notes.push(note);
+                    if (note.endTick > maxTick) maxTick = note.endTick;
+                });
+                tempoEvents.push(...trackResult.tempoEvents);
+                controlEvents.push(...trackResult.controlEvents);
+                if (trackResult.maxTick > maxTick) {
+                    maxTick = trackResult.maxTick;
+                }
+            }
+
+            if (!tempoEvents.length || tempoEvents.every(event => event.tick !== 0)) {
+                tempoEvents.push({ tick: 0, microsecondsPerBeat: 500000 });
+            }
+
+            notes.sort((a, b) => a.startTick - b.startTick || a.channel - b.channel || a.noteNumber - b.noteNumber);
+
+            return { format, ticksPerBeat, notes, tempoEvents, controlEvents, maxTick };
+        }
+
+        function buildTempoSegments(tempoEvents, ticksPerBeat) {
+            const sorted = tempoEvents.slice().sort((a, b) => a.tick - b.tick);
+            if (!sorted.length || sorted[0].tick !== 0) {
+                sorted.unshift({ tick: 0, microsecondsPerBeat: 500000 });
+            }
+            const segments = [];
+            let currentTime = 0;
+            for (let i = 0; i < sorted.length; i++) {
+                const tempo = sorted[i];
+                segments.push({
+                    tick: tempo.tick,
+                    time: currentTime,
+                    microsecondsPerBeat: tempo.microsecondsPerBeat
+                });
+                const next = sorted[i + 1];
+                if (next) {
+                    const deltaTicks = next.tick - tempo.tick;
+                    if (deltaTicks > 0) {
+                        currentTime += (deltaTicks * tempo.microsecondsPerBeat) / (1e6 * ticksPerBeat);
+                    }
+                }
+            }
+            return segments;
+        }
+
+        function tickToSeconds(tick, segments, ticksPerBeat) {
+            if (!segments.length) return 0;
+            let segment = segments[0];
+            for (let i = segments.length - 1; i >= 0; i--) {
+                if (tick >= segments[i].tick) {
+                    segment = segments[i];
+                    break;
+                }
+            }
+            const deltaTicks = tick - segment.tick;
+            const deltaSeconds = (deltaTicks * segment.microsecondsPerBeat) / (1e6 * ticksPerBeat);
+            return segment.time + deltaSeconds;
+        }
+
+        function prepareMidiNotes(parsed) {
+            const { notes, tempoEvents, ticksPerBeat, maxTick, controlEvents } = parsed;
+            const segments = buildTempoSegments(tempoEvents, ticksPerBeat);
+            const prepared = notes.map((note) => {
+                const start = tickToSeconds(note.startTick, segments, ticksPerBeat);
+                const end = tickToSeconds(note.endTick, segments, ticksPerBeat);
+                const duration = Math.max(0.02, end - start);
+                const velocity = Math.max(0.01, Math.min(1, note.velocity / 127));
+                const midiNumber = note.noteNumber;
+                const frequency = noteToFrequency(midiNumber);
+                return {
+                    time: start,
+                    duration,
+                    velocity,
+                    velocityValue: note.velocity,
+                    noteNumber: midiNumber,
+                    channel: note.channel,
+                    frequency,
+                    noteName: midiToNoteName(midiNumber) || `MIDI ${midiNumber}`
+                };
+            });
+            const durationSeconds = tickToSeconds(maxTick, segments, ticksPerBeat);
+            const preparedControls = (controlEvents || []).map((event) => ({
+                time: tickToSeconds(event.tick, segments, ticksPerBeat), kind: event.kind || 'cc',
+                controller: event.controller, value: event.value, noteNumber: event.noteNumber, channel: event.channel
+            }));
+            return { notes: prepared, controls: preparedControls, durationSeconds, segments };
+        }
+
+    async function handleMidiFileSelected(event) {
+        const file=event.target.files&&event.target.files[0]; if(!file)return;
+        stopMidiPlayback(false); setMidiInfo(`MIDI: 読み込み中 (${file.name})...`);
+        try {
+            const parsed=parseMidiFile(await file.arrayBuffer());
+            if (parsed.format === 2) throw new Error('MIDI Format 2 は未対応です');
+            const prepared=prepareMidiNotes(parsed);
+            midiState.notes=prepared.notes; midiState.controls=prepared.controls; midiState.durationSeconds=prepared.durationSeconds;
+            midiState.ticksPerBeat=parsed.ticksPerBeat; midiState.tempoSegments=prepared.segments; midiState.name=file.name;
+            midiState.positionSeconds=0; midiPositionInput.disabled=false; midiPositionInput.max=String(Math.max(.001,prepared.durationSeconds)); midiPositionInput.value='0'; updateMidiTimeline(true);
+            setMidiInfo(`MIDI: ${file.name} / ${prepared.notes.length} notes / ${prepared.durationSeconds.toFixed(2)}s`);
+        } catch(err) {
+            midiState.notes=[]; midiState.controls=[]; midiState.durationSeconds=0; midiState.name=null;
+            setMidiInfo(`MIDI読み込み失敗: ${err.message}`,true);
+        }
+        midiFileInput.value='';
+    }
+
+    function formatClock(seconds) {
+        const v=Math.max(0,Number(seconds)||0), m=Math.floor(v/60), sec=v-m*60;
+        return `${m}:${sec.toFixed(3).padStart(6,'0')}`;
+    }
+    function currentMidiSongTime() {
+        if (!midiState.playing) return midiState.positionSeconds;
+        return clamp(midiState.playStartSongTime + Math.max(0,audioCtx.currentTime-midiState.playStartAudioTime)*midiState.tempoScale, 0, midiState.durationSeconds);
+    }
+    function updateMidiTimeline(force=false) {
+        if (!midiPositionInput) return;
+        const pos=currentMidiSongTime();
+        if (force || !midiPositionInput.matches(':active')) midiPositionInput.value=String(pos);
+        midiCurrentEl.textContent=formatClock(pos); midiDurationEl.textContent=formatClock(midiState.durationSeconds);
+    }
+    function buildMidiPlaybackEvents() {
+        const events=[];
+        for(const n of midiState.notes){
+            events.push({time:n.time,type:'on',channel:n.channel,noteNumber:n.noteNumber,velocity:n.velocityValue});
+            events.push({time:n.time+n.duration,type:'off',channel:n.channel,noteNumber:n.noteNumber,velocity:0});
+        }
+        for(const c of midiState.controls||[]) events.push({time:c.time,type:c.kind||'cc',channel:c.channel,controller:c.controller,value:c.value,noteNumber:c.noteNumber});
+        const priority={cc:0,pitch:0,program:0,pressure:0,polyPressure:0,off:1,on:2};
+        events.sort((a,b)=>a.time-b.time || (priority[a.type]??1)-(priority[b.type]??1));
+        return events;
+    }
+    function clearMidiTransportVoices() {
+        const prefix='file-playback:';
+        for(const [id,v] of activeVoices) if(v.midiKey?.startsWith(prefix)){if(synthNode)synthNode.port.postMessage({type:'kill',id,frame:audioFrameAt(audioCtx.currentTime+.002)});v.releasing=true;}
+        for(const key of Array.from(midiSustainState.keys())) if(key.startsWith(prefix)) midiSustainState.delete(key);
+        for(const key of Array.from(midiSustainVoices.keys())) if(key.startsWith(prefix)) midiSustainVoices.delete(key);
+        for(const key of Array.from(midiVoiceQueues.keys())) if(key.startsWith(prefix)) midiVoiceQueues.delete(key);
+    }
+    function resetMidiFileChannels(audioTime = audioCtx.currentTime + 0.002) {
+        for(let ch=0;ch<16;ch++){
+            const key=makeMidiKey(MIDI_FILE_PORT,ch); midiChannelStates.set(key,defaultMidiChannelState(ch)); midiPitchRawState.set(key,MIDI_PITCH_CENTER); midiPitchState.set(key,0);
+            if(synthNode)synthNode.port.postMessage({type:'midiReset',midiKey:key,channel:ch,frame:audioFrameAt(audioTime)});
+        }
+    }
+    function haltMidiScheduler() {
+        midiState.sessionId++; midiState.playing=false;
+        if(midiState.schedulerTimer){clearInterval(midiState.schedulerTimer);midiState.schedulerTimer=null;}
+        if(midiState.finishTimer){clearTimeout(midiState.finishTimer);midiState.finishTimer=null;}
+        clearMidiTransportVoices();
+    }
+    function stopMidiPlayback(showMessage=false, reset=true) {
+        if(midiState.playing) midiState.positionSeconds=currentMidiSongTime();
+        haltMidiScheduler();
+        if(reset) midiState.positionSeconds=0;
+        updateMidiTimeline(true);
+        if(showMessage)setMidiInfo('MIDI: 停止しました');
+    }
+    function pauseMidiPlayback() {
+        if(!midiState.playing)return;
+        midiState.positionSeconds=currentMidiSongTime(); haltMidiScheduler(); updateMidiTimeline(true); setMidiInfo(`MIDI: Pause @ ${formatClock(midiState.positionSeconds)}`);
+    }
+    function dispatchMidiStateEvent(ev,audioTime) {
+        const midiKey=makeMidiKey(MIDI_FILE_PORT,ev.channel), ch=ev.channel;
+        if(ev.type==='cc') updateMidiCC(midiKey,ch,ev.controller,ev.value,audioTime);
+        else if(ev.type==='pitch') updatePitchForMidiKey(midiKey,ev.value,ch,audioTime);
+        else if(ev.type==='program') updateMidiProgram(midiKey,ch,ev.value,audioTime);
+        else if(ev.type==='pressure') updateMidiPressure(midiKey,ch,ev.value,audioTime);
+        else if(ev.type==='polyPressure') updatePolyPressure(midiKey,ch,ev.noteNumber,ev.value,audioTime);
+    }
+    function processScheduledMidiEvent(ev,audioTime) {
+        const port=MIDI_FILE_PORT, midiKey=makeMidiKey(port,ev.channel);
+        if(!['on','off'].includes(ev.type)){dispatchMidiStateEvent(ev,audioTime);return;}
+        const noteNumber=ev.noteNumber&0x7f, queueKey=`${midiKey}:${noteNumber}`;
+        if(ev.type==='on' && ev.velocity>0){
+            const id=nextVoiceId('midi-file'); let queue=midiVoiceQueues.get(queueKey); if(!queue){queue=[];midiVoiceQueues.set(queueKey,queue);} queue.push(id);
+            const trans=Number(midiTransposeInput.value)||0, vel=clamp((ev.velocity/127)*(Number(midiVelocityInput.value)||100)/100,0,1);
+            scheduleVoice(id,noteToFrequency(noteNumber+trans),{note:midiToNoteName(noteNumber),noteNumber,velocity:vel,detuneCents:getDetuneForMidiKey(midiKey),midiKey,channel:ev.channel,audioTime});
+        }else{
+            const queue=midiVoiceQueues.get(queueKey), id=queue&&queue.shift(); if(!id)return;
+            if(queue&&!queue.length)midiVoiceQueues.delete(queueKey);
+            if(midiSustainState.get(midiKey)){markVoiceForSustain(midiKey,id);const v=activeVoices.get(id);if(v)v.sustained=true;} else stopVoice(id,audioTime);
+        }
+    }
+    function restoreMidiStateAt(position,audioTime) {
+        const lastByKey=new Map();
+        for(const ev of midiState.controls||[]) if(ev.time<=position){
+            const id=`${ev.channel}:${ev.kind}:${ev.controller??ev.noteNumber??0}`; lastByKey.set(id,ev);
+        }
+        for(const ev of lastByKey.values()) dispatchMidiStateEvent({type:ev.kind||'cc',...ev},audioTime);
+    }
+    function restoreHeldNotesAt(position,audioTime) {
+        const trans=Number(midiTransposeInput.value)||0, velScale=(Number(midiVelocityInput.value)||100)/100;
+        for(const n of midiState.notes){
+            const end=n.time+n.duration; if(!(n.time<position && end>position))continue;
+            const midiKey=makeMidiKey(MIDI_FILE_PORT,n.channel), queueKey=`${midiKey}:${n.noteNumber}`, id=nextVoiceId('midi-file');
+            let q=midiVoiceQueues.get(queueKey);if(!q){q=[];midiVoiceQueues.set(queueKey,q);}q.push(id);
+            scheduleVoice(id,noteToFrequency(n.noteNumber+trans),{note:n.noteName,noteNumber:n.noteNumber,velocity:clamp(n.velocity*velScale,0,1),detuneCents:getDetuneForMidiKey(midiKey),midiKey,channel:n.channel,audioTime,ageSeconds:(position-n.time)/midiState.tempoScale});
+        }
+    }
+    function midiSchedulerTick(sessionId) {
+        if(!midiState.playing || midiState.sessionId!==sessionId)return;
+        const horizon=audioCtx.currentTime+LOOKAHEAD_SECONDS;
+        while(midiState.eventIndex<midiState.events.length){
+            const ev=midiState.events[midiState.eventIndex];
+            const when=midiState.playStartAudioTime+(ev.time-midiState.playStartSongTime)/midiState.tempoScale;
+            if(when>horizon)break;
+            processScheduledMidiEvent(ev,Math.max(audioCtx.currentTime+.002,when)); midiState.eventIndex++;
+        }
+        midiState.positionSeconds=currentMidiSongTime(); updateMidiTimeline();
+        if(midiState.eventIndex>=midiState.events.length && midiState.positionSeconds>=midiState.durationSeconds-.001){
+            haltMidiScheduler(); midiState.positionSeconds=midiState.durationSeconds; updateMidiTimeline(true); setMidiInfo('MIDI: 再生完了');
+        }
+    }
+    async function playLoadedMidi(fromPosition=null) {
+        if(!midiState.notes.length){setMidiInfo('MIDI: 先にファイルを読み込んでください',true);return;}
+        if(!compileCurrentExpression(true))return;
+        try{await ensureAudioReady();}catch(err){setMidiInfo(`AudioWorklet初期化失敗: ${err.message}`,true);return;}
+        if(midiState.playing)midiState.positionSeconds=currentMidiSongTime();
+        haltMidiScheduler();
+        const pos=clamp(fromPosition==null?midiState.positionSeconds:Number(fromPosition)||0,0,midiState.durationSeconds);
+        const tempoPercent=clamp(Number(midiTempoInput.value)||100,25,400);
+        midiState.tempoScale=tempoPercent/100; midiState.events=buildMidiPlaybackEvents(); midiState.playStartSongTime=pos; midiState.positionSeconds=pos;
+        midiState.eventIndex=midiState.events.findIndex(ev=>ev.time>=pos-1e-7); if(midiState.eventIndex<0)midiState.eventIndex=midiState.events.length;
+        midiState.playStartAudioTime=audioCtx.currentTime+.08; midiState.playing=true;
+        resetMidiFileChannels(midiState.playStartAudioTime); restoreMidiStateAt(pos,midiState.playStartAudioTime); restoreHeldNotesAt(pos,midiState.playStartAudioTime);
+        const sessionId=midiState.sessionId;
+        midiState.schedulerTimer=setInterval(()=>midiSchedulerTick(sessionId),SCHEDULER_INTERVAL_MS); midiSchedulerTick(sessionId);
+        setMidiInfo(`MIDI: 再生中 / ${tempoPercent}% / ${formatClock(pos)}`); updateMidiTimeline(true);
+    }
+    function restartMidiFromCurrent() {
+        if(!midiState.playing)return;
+        const pos=currentMidiSongTime(); playLoadedMidi(pos);
+    }
+
+    function isTypingTarget(target){return target instanceof HTMLElement&&(target.tagName==='INPUT'||target.tagName==='TEXTAREA'||target.isContentEditable);}
+
+    document.addEventListener('keydown',async e=>{
+        if(isTypingTarget(e.target))return;
+        const info=keyLookup.get(e.key.toLowerCase()); if(!info)return; if(e.repeat){e.preventDefault();return;} e.preventDefault();
+        if(keyboardVoiceMap.has(info.key))return;
+        const id=nextVoiceId(`key-${info.key}`);
+        if(await startVoice(id,noteToFrequency(info.note),{note:info.note,noteNumber:noteToMidi(info.note),velocity:1,eventTimestamp:e.timeStamp})){
+            keyboardVoiceMap.set(info.key,id);
+            setMessage(`${info.note} (${noteToFrequency(info.note).toFixed(2)} Hz) [Key ${info.key.toUpperCase()}]`);
+        }
+    });
+    document.addEventListener('keyup',e=>{if(isTypingTarget(e.target))return;const info=keyLookup.get(e.key.toLowerCase());if(!info)return;e.preventDefault();const id=keyboardVoiceMap.get(info.key);if(id){keyboardVoiceMap.delete(info.key);stopVoice(id);}});
+
+    function initMIDI(){
+        if(!navigator.requestMIDIAccess){midiStatusEl.textContent='MIDI: 非対応 (ブラウザ未サポート)';return;}
+        navigator.requestMIDIAccess().then(access=>{
+            midiStatusEl.textContent='MIDI: 接続待ち';
+            const setup=input=>{if(input)input.onmidimessage=event=>handleMIDIMessage(input,event);};
+            access.inputs.forEach(setup);
+            access.onstatechange=event=>{const p=event.port;if(p.type!=='input')return;if(p.state==='connected'){setup(p);midiStatusEl.textContent=`MIDI: 接続 ${p.name||p.id}`;}else midiStatusEl.textContent=`MIDI: 切断 ${p.name||p.id}`;};
+        }).catch(err=>midiStatusEl.textContent=`MIDI: 初期化失敗 (${err?.message||err})`);
+    }
+
+    async function handleMIDIMessage(port,event){
+        const data=event.data;if(!data||data.length<2)return;
+        const status=data[0]&0xf0, channel=data[0]&0x0f, midiKey=makeMidiKey(port,channel), audioTime=eventTimestampToAudioTime(event.receivedTime);
+        if(status===0xE0&&data.length>=3){const raw=clampPitchValue((data[1]&0x7f)|((data[2]&0x7f)<<7));updatePitchForMidiKey(midiKey,raw,channel,audioTime);midiStatusEl.textContent=`MIDI: Pitch ${(pitchValueToDetune(raw)/100).toFixed(2)} st`;return;}
+        if(status===0xB0&&data.length>=3){const cc=data[1]&0x7f,value=data[2]&0x7f;updateMidiCC(midiKey,channel,cc,value,audioTime);midiStatusEl.textContent=`MIDI: CC${cc} = ${value}`;return;}
+        if(status===0xC0){updateMidiProgram(midiKey,channel,data[1]&0x7f,audioTime);midiStatusEl.textContent=`MIDI: Program ${data[1]&0x7f}`;return;}
+        if(status===0xD0){updateMidiPressure(midiKey,channel,data[1]&0x7f,audioTime);midiStatusEl.textContent=`MIDI: Pressure ${data[1]&0x7f}`;return;}
+        if(status===0xA0&&data.length>=3){updatePolyPressure(midiKey,channel,data[1]&0x7f,data[2]&0x7f,audioTime);return;}
+        if((status!==0x80&&status!==0x90)||data.length<3)return;
+        const noteNumber=data[1]&0x7f, velocity=data[2]&0x7f, queueKey=`${midiKey}:${noteNumber}`;
+        if(status===0x90&&velocity>0){
+            const id=nextVoiceId('midi');let q=midiVoiceQueues.get(queueKey);if(!q){q=[];midiVoiceQueues.set(queueKey,q);}q.push(id);
+            const detune=getDetuneForMidiKey(midiKey);
+            if(await startVoice(id,noteToFrequency(noteNumber),{note:midiToNoteName(noteNumber),noteNumber,velocity:velocity/127,detuneCents:detune,midiKey,channel,audioTime})) midiStatusEl.textContent=`MIDI: ${midiToNoteName(noteNumber)} vel ${velocity}`;
+        }else{
+            const q=midiVoiceQueues.get(queueKey),id=q&&q.shift();if(!id)return;if(q&&!q.length)midiVoiceQueues.delete(queueKey);
+            if(midiSustainState.get(midiKey)){markVoiceForSustain(midiKey,id);const v=activeVoices.get(id);if(v)v.sustained=true;}else stopVoice(id,audioTime);
+        }
+    }
+
+    playBtn.addEventListener('click',async e=>{
+        e.preventDefault(); stopMainPlayback();
+        const freq=clamp(Number(freqInput.value)||440,1,20000), duration=clamp(Number(durationInput.value)||2,0.05,30), id=nextVoiceId('main');
+        if(await startVoice(id,freq,{velocity:1,duration,noteNumber:-1})){currentMainVoice=id;setMessage(`AudioWorklet再生: ${freq.toFixed(2)} Hz / ${duration.toFixed(2)}s`);}
+    });
+    stopBtn.addEventListener('click',e=>{e.preventDefault();stopEverything();setMessage('停止しました。');});
+    plotBtn.addEventListener('click',e=>{e.preventDefault();renderPlot();});
+    midiFileInput?.addEventListener('change',handleMidiFileSelected);
+    midiPlayBtn?.addEventListener('click',e=>{e.preventDefault();playLoadedMidi();});
+    midiPauseBtn?.addEventListener('click',e=>{e.preventDefault();pauseMidiPlayback();});
+    midiStopBtn?.addEventListener('click',e=>{e.preventDefault();stopMidiPlayback(true,true);});
+    gainInput.addEventListener('input',()=>{masterGain.gain.setTargetAtTime(clamp(Number(gainInput.value)||0,0,2),audioCtx.currentTime,0.005);});
+    releaseInput?.addEventListener('input',()=>{if(synthNode)synthNode.port.postMessage({type:'config',releaseSeconds:releaseSeconds()});});
+
+    function initMonacoEditor() {
+        if (!monacoHost) return;
+        if (typeof window.require !== 'function') {
+            monacoHost.hidden = true;
+            exprInput.hidden = false;
+            if (editorDiagnosticEl) editorDiagnosticEl.textContent = 'Monaco loader unavailable';
+            return;
+        }
+        const vsBase = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs';
+        window.require.config({ paths: { vs: vsBase } });
+        window.require(['vs/editor/editor.main'], () => {
+            const m = window.monaco;
+            if (!m) return;
+            m.languages.register({ id: 'mathsynth' });
+            m.languages.setMonarchTokensProvider('mathsynth', {
+                tokenizer: { root: [
+                    [/\/\/.*$/, 'comment'], [/#.*$/, 'comment'],
+                    [/\b(?:wave|pan|l_limit)\b/, 'keyword'],
+                    [/\b(?:t|time|s|velocity|l|freq|note|noteNumber|ch|bend|bend_st|mw|vol|midi_pan|mexpr|sustain|pressure|poly_pressure|program)\b/, 'variable.predefined'],
+                    [/\b(?:PI|TAU|E|PHI)\b/, 'number'],
+                    [/\b(?:sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|abs|sqrt|cbrt|floor|ceil|round|sign|exp|log|log10|log2|pow|min|max|clamp|mod|cc|noise|saw|square|pulse|triangle)\b(?=\s*\()/, 'type.identifier'],
+                    [/[A-Za-z_][A-Za-z0-9_]*/, 'identifier'],
+                    [/(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?/, 'number'],
+                    [/[=+\-*\/%^]/, 'operator'], [/[,()]/, 'delimiter']
+                ]}
+            });
+            m.languages.setLanguageConfiguration('mathsynth', {
+                comments: { lineComment: '//' },
+                brackets: [['(', ')']],
+                autoClosingPairs: [{ open: '(', close: ')' }]
+            });
+
+            const variableDocs = [
+                ['t','seconds since key down'], ['s','key velocity 0..1'], ['l','seconds since key release'], ['freq','current frequency in Hz'],
+                ['note','MIDI note number'], ['ch','MIDI channel 1..16'], ['bend','pitch bend -1..1'], ['bend_st','pitch bend in semitones'],
+                ['mw','CC1 mod wheel'], ['vol','CC7 volume'], ['midi_pan','CC10 mapped to -1..1'], ['mexpr','CC11 expression'],
+                ['sustain','CC64 sustain'], ['pressure','channel pressure'], ['poly_pressure','polyphonic key pressure'], ['program','program number 0..127']
+            ];
+            const fnDocs = [
+                ['sin','sin(${1:x})'], ['cos','cos(${1:x})'], ['tan','tan(${1:x})'], ['abs','abs(${1:x})'], ['sqrt','sqrt(${1:x})'],
+                ['pow','pow(${1:a}, ${2:b})'], ['exp','exp(${1:x})'], ['log','log(${1:x})'], ['min','min(${1:a}, ${2:b})'], ['max','max(${1:a}, ${2:b})'],
+                ['clamp','clamp(${1:x}, ${2:min}, ${3:max})'], ['mod','mod(${1:x}, ${2:y})'], ['cc','cc(${1:74})'], ['noise','noise()'],
+                ['saw','saw(${1:freq}, ${2:t})'], ['square','square(${1:freq}, ${2:t}, ${3:0.5})'], ['pulse','pulse(${1:freq}, ${2:t}, ${3:0.5})'], ['triangle','triangle(${1:freq}, ${2:t})']
+            ];
+            m.languages.registerCompletionItemProvider('mathsynth', {
+                triggerCharacters: ['_'],
+                provideCompletionItems(model, position) {
+                    const word = model.getWordUntilPosition(position);
+                    const range = new m.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+                    const locals = [];
+                    for (let line = 1; line < position.lineNumber; line++) {
+                        const hit = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(model.getLineContent(line));
+                        if (hit && !locals.includes(hit[1])) locals.push(hit[1]);
+                    }
+                    const suggestions = [];
+                    for (const [name, detail] of variableDocs) suggestions.push({ label:name, kind:m.languages.CompletionItemKind.Variable, insertText:name, detail, range });
+                    for (const name of ['PI','TAU','E','PHI']) suggestions.push({ label:name, kind:m.languages.CompletionItemKind.Constant, insertText:name, detail:'constant', range });
+                    for (const [name, snippet] of fnDocs) suggestions.push({ label:name, kind:m.languages.CompletionItemKind.Function, insertText:snippet, insertTextRules:m.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail:'function', range });
+                    for (const name of locals) suggestions.push({ label:name, kind:m.languages.CompletionItemKind.Variable, insertText:name, detail:'local variable', range });
+                    for (const [name, snippet, detail] of [['wave','wave = ${1:0}','audio sample output'],['pan','pan = ${1:0}','stereo pan -1..1'],['l_limit','l_limit = ${1:1}','voice lifetime after release [s]']]) {
+                        suggestions.push({ label:name, kind:m.languages.CompletionItemKind.Property, insertText:snippet, insertTextRules:m.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail, range });
+                    }
+                    return { suggestions };
+                }
+            });
+            m.languages.registerHoverProvider('mathsynth', {
+                provideHover(model, position) {
+                    const word = model.getWordAtPosition(position)?.word;
+                    if (!word) return null;
+                    const hit = variableDocs.find(([name]) => name === word);
+                    if (hit) return { contents:[{ value:`**${hit[0]}** — ${hit[1]}` }] };
+                    if (word === 'wave') return { contents:[{ value:'**wave** — final sample value for this voice' }] };
+                    if (word === 'pan') return { contents:[{ value:'**pan** — stereo position from -1 (L) to +1 (R)' }] };
+                    if (word === 'l_limit') return { contents:[{ value:'**l_limit** — maximum voice lifetime after key release, in seconds' }] };
+                    if (word === 'cc') return { contents:[{ value:'**cc(n)** — MIDI CC n normalized to 0..1' }] };
+                    return null;
+                }
+            });
+
+            m.editor.defineTheme('mathSynthSite', {
+                base: 'vs-dark', inherit: true,
+                rules: [
+                    { token:'comment', foreground:getColorVar('--color-text-0','#999999').replace('#',''), fontStyle:'italic' },
+                    { token:'keyword', foreground:getColorVar('--color-accent-1','#a9b7e6').replace('#','') },
+                    { token:'variable.predefined', foreground:getColorVar('--color-text-1','#cccccc').replace('#','') },
+                    { token:'type.identifier', foreground:getColorVar('--color-accent-1','#a9b7e6').replace('#','') }
+                ],
+                colors: {
+                    'editor.background': getColorVar('--color-bg-0','#121212'),
+                    'editor.foreground': getColorVar('--color-text-1','#cccccc'),
+                    'editorLineNumber.foreground': getColorVar('--color-text-0','#999999'),
+                    'editorLineNumber.activeForeground': getColorVar('--color-text-1','#cccccc'),
+                    'editorCursor.foreground': getColorVar('--color-accent-1','#a9b7e6'),
+                    'editor.selectionBackground': getColorVar('--color-bg-2','#282828'),
+                    'editorSuggestWidget.background': getColorVar('--color-bg-1','#1a1a1a'),
+                    'editorSuggestWidget.border': getColorVar('--color-bg-2','#282828'),
+                    'editorHoverWidget.background': getColorVar('--color-bg-1','#1a1a1a'),
+                    'editorHoverWidget.border': getColorVar('--color-bg-2','#282828')
+                }
+            });
+
+            const model = m.editor.createModel(exprInput.value, 'mathsynth');
+            monacoEditor = m.editor.create(monacoHost, {
+                model, theme:'mathSynthSite', automaticLayout:true, fontFamily:'"UDEV Gothic HSLG", monospace', fontSize:13,
+                minimap:{enabled:false}, glyphMargin:false, folding:false, lineDecorationsWidth:8, lineNumbersMinChars:3,
+                scrollBeyondLastLine:false, renderLineHighlight:'line', smoothScrolling:true, wordWrap:'off', tabSize:4,
+                quickSuggestions:{other:true,comments:false,strings:false}, suggestOnTriggerCharacters:true,
+                parameterHints:{enabled:true}, bracketPairColorization:{enabled:false}, padding:{top:10,bottom:10}
+            });
+
+            function updateMarkers() {
+                try {
+                    compileProgram(model.getValue().trim());
+                    m.editor.setModelMarkers(model, 'mathsynth', []);
+                } catch (err) {
+                    const match = /^(\d+)行目:\s*(.*)$/.exec(err.message || '');
+                    const line = match ? Math.max(1, Number(match[1])) : 1;
+                    m.editor.setModelMarkers(model, 'mathsynth', [{
+                        severity:m.MarkerSeverity.Error, message:match ? match[2] : String(err.message || err),
+                        startLineNumber:line, startColumn:1, endLineNumber:line, endColumn:Math.max(2, model.getLineMaxColumn(line))
+                    }]);
+                }
+            }
+            model.onDidChangeContent(() => {
+                exprInput.value = model.getValue();
+                exprInput.dispatchEvent(new Event('input', { bubbles:true }));
+                updateMarkers();
+            });
+            monacoEditor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.Enter, () => playBtn.click());
+            monacoEditor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => { syncExpressionQueryParam(exprInput.value); });
+            updateMarkers();
+            if (editorDiagnosticEl) editorDiagnosticEl.textContent = 'ready';
+        }, () => {
+            monacoHost.hidden = true;
+            exprInput.hidden = false;
+            if (editorDiagnosticEl) editorDiagnosticEl.textContent = 'Monaco failed to load';
+        });
+    }
+
+    const PRESETS = [
+        {cat:'Basic',name:'Pure Sine',desc:'最小構成。velocityとreleaseだけを持つ正弦波。',code:`release = exp(-8*l)\nwave = s*release*sin(TAU*freq*t)\npan = 0\nl_limit = 0.8`},
+        {cat:'Basic',name:'Soft Triangle',desc:'倍音を抑えた柔らかい基本音。',code:`a = clamp(t/0.01,0,1)\nr = exp(-7*l)\nwave = s*a*r*(0.85*triangle(freq,t)+0.15*sin(TAU*freq*2*t))\nl_limit = 0.9`},
+        {cat:'Keys',name:'Electric Piano',desc:'速いアタックと減衰する高調波。velocityで明るさも変化。',code:`a = clamp(t/0.004,0,1)\nr = exp(-6*l)\nbright = 0.12 + 0.28*s\nwave = s*a*r*(sin(TAU*freq*t)+bright*sin(TAU*freq*2*t)*exp(-2.2*t)+0.08*sin(TAU*freq*4*t)*exp(-5*t))\nl_limit = 1.3`},
+        {cat:'Keys',name:'Drawbar Organ',desc:'持続する加算合成。mod wheelでトレモロ。',code:`r = exp(-5*l)\ntrem = 1 - mw*0.25 + mw*0.25*sin(TAU*5.2*t)\nwave = s*r*trem*(0.65*sin(TAU*freq*t)+0.22*sin(TAU*freq*2*t)+0.1*sin(TAU*freq*3*t)+0.05*sin(TAU*freq*4*t))\nl_limit = 1.0`},
+        {cat:'Pads',name:'Warm Stereo Pad',desc:'遅いアタック、デチューン、ゆっくりしたパン。',code:`a = clamp(t/0.65,0,1)\nr = exp(-1.7*l)\nwave = s*a*r*(0.34*saw(freq*0.997,t)+0.34*saw(freq*1.003,t)+0.22*triangle(freq,t)+0.1*sin(TAU*freq*2*t))\npan = clamp(midi_pan + 0.22*sin(TAU*0.07*t),-1,1)\nl_limit = 3.5`},
+        {cat:'Pads',name:'Expression Pad',desc:'CC11 ExpressionとAftertouchを音量・倍音に利用。',code:`a = clamp(t/0.9,0,1)\nr = exp(-1.4*l)\nhi = 0.08 + 0.32*pressure\nwave = s*mexpr*a*r*(0.58*triangle(freq,t)+0.28*sin(TAU*freq*2*t)+hi*sin(TAU*freq*3*t))\npan = midi_pan\nl_limit = 4`},
+        {cat:'Bass',name:'Sub Bass',desc:'サブ主体。velocityで2倍音を追加。',code:`a = clamp(t/0.006,0,1)\nr = exp(-7*l)\nwave = s*a*r*(0.9*sin(TAU*freq*t)+0.18*s*sin(TAU*freq*2*t))\nl_limit = 0.8`},
+        {cat:'Bass',name:'Acid-ish Bass',desc:'pulse幅をmod wheelで動かすアシッド系。',code:`a = clamp(t/0.003,0,1)\nr = exp(-8*l)\nduty = 0.18 + 0.5*mw\nwave = s*a*r*(0.7*pulse(freq,t,duty)+0.22*saw(freq,t)+0.08*sin(TAU*freq*t))\nl_limit = 0.7`},
+        {cat:'Lead',name:'PWM Lead',desc:'mod wheelでpulse width、pitch bendをpanへ少量反映。',code:`a = clamp(t/0.012,0,1)\nr = exp(-5*l)\nduty = clamp(0.5 + 0.32*mw*sin(TAU*0.7*t),0.08,0.92)\nwave = s*a*r*(0.72*square(freq,t,duty)+0.28*sin(TAU*freq*t))\npan = clamp(midi_pan + 0.2*bend,-1,1)\nl_limit = 1.2`},
+        {cat:'Lead',name:'SuperSaw Lead',desc:'3本のsawをデチューン。pressureで中央倍音を増加。',code:`a = clamp(t/0.02,0,1)\nr = exp(-4.5*l)\nwave = s*a*r*(0.32*saw(freq*0.994,t)+0.36*saw(freq,t)+0.32*saw(freq*1.006,t)+0.12*pressure*sin(TAU*freq*2*t))\npan = midi_pan\nl_limit = 1.4`},
+        {cat:'Pluck / Bell',name:'Short Pluck',desc:'短い減衰を持つ明るいpluck。',code:`a = clamp(t/0.002,0,1)\nr = exp(-12*l)\nbody = exp(-4.2*t)\nwave = s*a*r*body*(sin(TAU*freq*t)+0.35*sin(TAU*freq*2*t)+0.12*sin(TAU*freq*4*t))\nl_limit = 0.5`},
+        {cat:'Pluck / Bell',name:'FM Bell',desc:'非整数比FM。velocityでFM indexを変化。',code:`r = exp(-4*l)\nidx = (2.5 + 5*s)*exp(-2.8*t)\nwave = s*r*exp(-1.2*t)*sin(TAU*freq*t + idx*sin(TAU*freq*2.71*t))\npan = midi_pan\nl_limit = 1.8`},
+        {cat:'Percussion',name:'Synthetic Kick',desc:'時間とともに周波数が落ちるクリック付きkick。基準freqは50〜80Hz推奨。',code:`f = freq*(1 + 3.5*exp(-35*t))\nbody = exp(-7*t)\nr = exp(-18*l)\nwave = s*r*(body*sin(TAU*f*t)+0.12*noise()*exp(-55*t))\nl_limit = 0.25`},
+        {cat:'MIDI Reactive',name:'CC74 Harmonic Morph',desc:'任意CC参照の例。CC74で基本波から高調波へモーフ。',code:`x = cc(74)\nr = exp(-5*l)\nwave = s*r*((1-x)*sin(TAU*freq*t)+x*(0.55*saw(freq,t)+0.3*sin(TAU*freq*2*t)+0.15*sin(TAU*freq*3*t)))\npan = midi_pan\nl_limit = 1.2`},
+        {cat:'MIDI Reactive',name:'Aftertouch Shimmer',desc:'channel/poly aftertouchで高域とステレオ移動を追加。',code:`p = clamp(pressure + poly_pressure,0,1)\nr = exp(-3*l)\nwave = s*r*(0.75*sin(TAU*freq*t)+0.18*sin(TAU*freq*2*t)+0.22*p*sin(TAU*freq*5*t))\npan = clamp(midi_pan + 0.35*p*sin(TAU*0.4*t),-1,1)\nl_limit = 2.2`}
+    ];
+    function refreshPresetCategories(){
+        const cats=[...new Set(PRESETS.map(p=>p.cat))]; presetCategoryInput.innerHTML=cats.map(c=>`<option>${c}</option>`).join(''); refreshPresetList();
+    }
+    function refreshPresetList(){
+        const cat=presetCategoryInput.value; const items=PRESETS.filter(p=>p.cat===cat);
+        presetSelectInput.innerHTML=items.map((p,i)=>`<option value="${i}">${p.name}</option>`).join(''); refreshPresetPreview();
+    }
+    function selectedPreset(){const items=PRESETS.filter(p=>p.cat===presetCategoryInput.value);return items[Number(presetSelectInput.value)||0]||items[0];}
+    function refreshPresetPreview(){const p=selectedPreset();if(!p)return;if(presetDescriptionEl)presetDescriptionEl.textContent=p.desc;if(presetCodePreviewEl)presetCodePreviewEl.textContent=p.code;}
+    function setEditorValue(value){
+        const next=String(value??'');
+        if(monacoEditor){ if(monacoEditor.getValue()!==next) monacoEditor.setValue(next); monacoEditor.focus(); }
+        else { exprInput.value=next; exprInput.dispatchEvent(new Event('input',{bubbles:true})); }
+    }
+    function loadSelectedPreset(){const p=selectedPreset();if(!p)return;setEditorValue(p.code);renderPlot();}
+    presetCategoryInput?.addEventListener('change',refreshPresetList); presetSelectInput?.addEventListener('change',refreshPresetPreview); presetLoadBtn?.addEventListener('click',e=>{e.preventDefault();loadSelectedPreset();});
+    refreshPresetCategories();
+
+    function updateMidiControlLabels(){
+        midiTempoValue.textContent=`${midiTempoInput.value}%`; midiTransposeValue.textContent=`${Number(midiTransposeInput.value)>=0?'+':''}${midiTransposeInput.value} st`;
+        midiVelocityValue.textContent=`${midiVelocityInput.value}%`; midiBendRangeValue.textContent=`${midiBendRangeInput.value} st`;
+    }
+    [midiTempoInput,midiTransposeInput,midiVelocityInput].forEach(el=>{el?.addEventListener('input',updateMidiControlLabels);el?.addEventListener('change',restartMidiFromCurrent);});
+    midiBendRangeInput?.addEventListener('input',()=>{updateMidiControlLabels();for(const [key,raw] of midiPitchRawState){const ch=getMidiChannelState(key).channel;updatePitchForMidiKey(key,raw,ch);}});
+    midiPositionInput?.addEventListener('input',()=>{midiCurrentEl.textContent=formatClock(Number(midiPositionInput.value)||0);});
+    midiPositionInput?.addEventListener('change',()=>{const pos=Number(midiPositionInput.value)||0;if(midiState.playing)playLoadedMidi(pos);else{midiState.positionSeconds=pos;updateMidiTimeline(true);}});
+    updateMidiControlLabels(); updateMidiTimeline(true);
+
+    exprInput.addEventListener('input',()=>{updateLineNumbers();updateCursorStatus();updateExpressionPreview();syncExpressionQueryParam(exprInput.value);const code=compileCurrentExpression(false);if(code&&synthNode)synthNode.port.postMessage({type:'program',code});autocompleteIndex=0;renderAutocomplete(false);});
+    exprInput.addEventListener('scroll',()=>{if(lineNumbersEl)lineNumbersEl.scrollTop=exprInput.scrollTop;if(!autocompleteEl?.hidden)renderAutocomplete(false);});
+    exprInput.addEventListener('click',()=>{updateCursorStatus();hideAutocomplete();});
+    exprInput.addEventListener('keyup',e=>{if(!['ArrowUp','ArrowDown','Enter','Tab','Escape'].includes(e.key))updateCursorStatus();});
+    exprInput.addEventListener('keydown',e=>{
+        if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();playBtn.click();return;}
+        if((e.ctrlKey||e.metaKey)&&e.code==='Space'){e.preventDefault();autocompleteIndex=0;renderAutocomplete(true);return;}
+        if(!autocompleteEl?.hidden){
+            if(e.key==='ArrowDown'){e.preventDefault();autocompleteIndex=(autocompleteIndex+1)%autocompleteItems.length;renderAutocomplete(true);return;}
+            if(e.key==='ArrowUp'){e.preventDefault();autocompleteIndex=(autocompleteIndex-1+autocompleteItems.length)%autocompleteItems.length;renderAutocomplete(true);return;}
+            if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();applyAutocomplete();return;}
+            if(e.key==='Escape'){e.preventDefault();hideAutocomplete();return;}
+        }
+        if(e.key==='Tab'){
+            e.preventDefault();
+            const start=exprInput.selectionStart,end=exprInput.selectionEnd;
+            if(start===end) exprInput.setRangeText('    ',start,end,'end');
+            else {
+                const selected=exprInput.value.slice(start,end); const indented=selected.split('\n').map(x=>'    '+x).join('\n');
+                exprInput.setRangeText(indented,start,end,'select');
+            }
+            exprInput.dispatchEvent(new Event('input',{bubbles:true}));
+        }
+    });
+    document.querySelectorAll('#math-synth [data-insert]').forEach(btn=>btn.addEventListener('click',e=>{e.preventDefault();insertAtCursor(btn.dataset.insert||'');if(btn.dataset.caret){const p=exprInput.selectionStart+(Number(btn.dataset.caret)||0);exprInput.setSelectionRange(p,p);}}));
+    editorFormatBtn?.addEventListener('click',e=>{e.preventDefault();formatExpression();});
+    editorShareBtn?.addEventListener('click',async e=>{e.preventDefault();
+        syncExpressionQueryParam(exprInput.value);
+        try{await navigator.clipboard.writeText(window.location.href);setMessage('現在の式を含むURLをコピーしました。');}
+        catch(_){setMessage('URLのコピーに失敗しました。アドレスバーからコピーしてください。',true);}
+    });
+    window.addEventListener('blur',stopAllVoices);
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAllVoices();});
+    window.addEventListener('popstate',()=>{const v=getExpressionFromUrl()??'';if(v!==exprInput.value){setEditorValue(v);updateExpressionPreview();compileCurrentExpression(false);renderPlot();}});
+
+    const initialExprParam=getExpressionFromUrl(); if(initialExprParam!==null)exprInput.value=initialExprParam;
+    syncExpressionQueryParam(exprInput.value);
+    updateLineNumbers(); updateCursorStatus();
+    renderVirtualKeyboard(); initMIDI(); updateExpressionPreview(); compileCurrentExpression(false); renderPlot(); initMonacoEditor(); requestAnimationFrame(drawLoop);
+});
+</script>

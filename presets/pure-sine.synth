@@ -1,0 +1,11 @@
+p_attack_ms = param(8.33, 1, 200, 0.1)
+p_release_s = param(1.5, 0.1, 6, 0.01)
+p_gain = param(1, 0, 1.5, 0.01)
+attack = min(t * 1000 / p_attack_ms, 1)
+# Release Sを大きくすると余韻が長くなります。初期値では従来の
+# exp(-6 * l)カーブを維持します: 9 / 1.5 = 6。
+release = exp(-9 * l / p_release_s)
+env = attack * release
+wave = p_gain * env * s * sin(TAU * freq * t)
+pan = midi_pan
+l_limit = p_release_s

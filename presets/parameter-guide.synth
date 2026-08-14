@@ -1,0 +1,38 @@
+# PARAMETER GUIDE — p_*パラメーターの記法サンプル
+#
+# ユーザーパラメーターは次の形で宣言します:
+#   p_name = param(default, minimum, maximum, step)
+#
+# - 名前は必ずp_で始めます。Play modeでのラベルにもなります。
+# - defaultはプリセット読み込み時の値です。
+# - minimum / maximumはノブ、スライダー、VSTオートメーションの範囲です。
+# - stepは省略できます。連続値は0、段階値は0.01や1などを指定します。
+# - パラメーターは、それを使う式より前に宣言します。
+#
+# Play modeでパラメーターを右クリックすると、Knob / Slider / Toggleの選択、
+# リセット、値のコピー・貼り付けができます。Arrangeを押すとコントロールをドラッグでき、
+# 右下のハンドルでサイズを変更できます。宣言順がVSTオートメーション順なので、
+# プリセットにあるp_*行の順番は保ってください。
+
+# 以下の式が受け取るのは、パラメーターに指定した実値です。
+p_gain = param(0.8, 0, 1.5, 0.01)
+p_attack_ms = param(12, 1, 500, 1)
+p_release_s = param(1.5, 0.1, 8, 0.01)
+p_triangle_mix = param(0.25, 0, 1, 0.01)
+p_pan_spread = param(0.15, 0, 1, 0.01)
+
+# Attack Msを大きくすると、最大音量に達するまで長くなります。
+attack = min(t * 1000 / p_attack_ms, 1)
+# Release Sを大きくすると、必ずリリースが長くなります。単位は秒です。
+release = exp(-8 * l / p_release_s)
+
+fundamental = sin(TAU * freq * t)
+triangle_layer = triangle(freq * 2, t)
+tone = mix(fundamental, triangle_layer, p_triangle_mix)
+
+# sはMIDIベロシティ、midi_panはMIDI CC10のパンです。エンジンがMIDIチャンネル音量と
+# エクスプレッションを適用するため、意図的に非線形の効果を作る場合以外は
+# ここでvol / mexprを掛けないでください。
+wave = p_gain * s * attack * release * tone
+pan = midi_pan + p_pan_spread * sin(voice * 2.4)
+l_limit = p_release_s
