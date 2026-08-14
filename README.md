@@ -222,5 +222,4 @@ VST3 の UI lifecycle、WebView2 生成、asset 配信、Monaco 起動結果は�
 `CODE_SYNTH_UI_DEVTOOLS=1` を設定してから DAW を起動すると、エディター表示時に WebView2 DevTools も開きます。
 
 ## wiwiwi
-
-式ベースの poly synth、MathSynth UI、Editor / Play、VST automation、ライブ波形、MIDI/transport、プリセット、状態保存まで実装しています。`modal`、`resonator`、`delay`、filter、history など状態付き DSP primitive と standalone Web 版は今後の拡張候補です。DSL と DSP コアは UI/VST3 から独立しているため、Web 版でも同じ compiler/runtime を再利用するつもりです。ういー
+`modal`、`resonator`、`delay`、filter、history など状態付き DSP primitive と standalone Web 版は今後の拡張候補です。DSL と DSP コアは UI/VST3 から独立しているため、Web 版でも同じ compiler/runtime を再利用するつもりです。ういー
