@@ -1,17 +1,17 @@
-# Expressive Strings — エクスプレッションはエンジンが適用します。MWでビブラート、
-# チャンネルプレッシャーで弓の強さ、CC74で高次倍音を加えます。
-p_attack_s = param(0.18, 0.01, 3, 0.01)
-p_release_s = param(2.8, 0.2, 10, 0.01)
-p_bow = param(0.55, 0, 1, 0.01)
-p_spread = param(0.28, 0, 1, 0.01)
-
-attack = min(t / p_attack_s, 1)
-release = exp(-7 * l / p_release_s)
-vibrato = mw * 0.008 * sin(TAU * 5.2 * t + voice)
-phase = TAU * freq * t + vibrato
-bow = p_bow * (0.7 + 0.3 * pressure)
-brightness = 0.12 + 0.35 * cc(74)
-string = sin(phase) + bow * 0.32 * sin(phase * 2) + brightness * sin(phase * 3)
-wave = 0.58 * s * attack * release * tanh(1.35 * string)
-pan = midi_pan + p_spread * sin(voice * 2.1)
-l_limit = p_release_s
+# Expressive Strings — MW、pressure、CC74に反応します。
+p.attack_s = param(0.18, 0.01, 3, 0.01)
+p.release_s = param(2.8, 0.2, 10, 0.01)
+p.bow = param(0.55, 0, 1, 0.01)
+p.spread = param(0.28, 0, 1, 0.01)
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-7 * in.l / p.release_s)
+    vibrato = in.mw * 0.008 * sin(TAU * 5.2 * in.t + in.voice)
+    phase = TAU * in.freq * in.t + vibrato
+    bow = p.bow * (0.7 + 0.3 * in.pressure)
+    brightness = 0.12 + 0.35 * in.cc(74)
+    string = sin(phase) + bow * 0.32 * sin(phase * 2) + brightness * sin(phase * 3)
+    out.wave = 0.58 * in.s * in.vol * in.mexpr * attack * release * tanh(1.35 * string)
+    out.pan = in.midi_pan + p.spread * sin(in.voice * 2.1)
+    out.l_limit = p.release_s
+}

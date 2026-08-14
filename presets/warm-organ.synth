@@ -1,11 +1,15 @@
-p_second = param(0.35, 0, 1, 0.01)
-p_third = param(0.18, 0, 1, 0.01)
-p_drive = param(1.5, 0.2, 4, 0.01)
-p_release_s = param(1.5, 0.1, 6, 0.01)
-release = exp(-7.5*l / p_release_s)
-fundamental = sin(TAU*freq*t)
-second = p_second*sin(TAU*freq*2*t)
-third = p_third*sin(TAU*freq*3*t)
-wave = 0.65*s*release*tanh(p_drive*(fundamental+second+third))
-pan = midi_pan
-l_limit = p_release_s
+p.second = param(0.35, 0, 1, 0.01)
+p.third = param(0.18, 0, 1, 0.01)
+p.drive = param(1.5, 0.2, 4, 0.01)
+p.release_s = param(1.5, 0.1, 6, 0.01)
+
+fn note(in, p) -> out {
+    release = exp(-7.5 * in.l / p.release_s)
+    fundamental = sin(TAU * in.freq * in.t)
+    second = p.second * sin(TAU * in.freq * 2 * in.t)
+    third = p.third * sin(TAU * in.freq * 3 * in.t)
+    out.wave = 0.65 * in.s * in.vol * in.mexpr * release
+        * tanh(p.drive * (fundamental + second + third))
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

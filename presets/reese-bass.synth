@@ -1,0 +1,40 @@
+# REESE BASS — Detuned stereo oscillatorとfilterを持つ太いBass
+p.gain = param(0.62, 0, 1.5, 0.01)
+p.attack_s = param(0.012, 0.001, 1, 0.001)
+p.decay_s = param(0.8, 0.04, 5, 0.01)
+p.sustain = param(0.72, 0, 1, 0.01)
+p.release_s = param(0.55, 0.03, 5, 0.01)
+p.detune_cent = param(18, 0, 60, 0.1)
+p.cutoff_hz = param(680, 35, 8000, 1, 74)
+p.filter_env_oct = param(1.4, 0, 5, 0.01)
+p.filter_decay_s = param(0.45, 0.02, 4, 0.01)
+p.stereo_width = param(0.72, 0, 1.5, 0.01)
+p.sub_mix = param(0.28, 0, 1, 0.01)
+p.drive = param(1.8, 0.5, 8, 0.01)
+
+fn note(in, p) -> out {
+    f32 voice lowpass_l = 0
+    f32 voice lowpass_r = 0
+    attack = min(in.t / p.attack_s, 1)
+    decay = p.sustain + (1 - p.sustain) * exp(-5 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    detune = cent_ratio(p.detune_cent)
+    left_raw = saw(in.freq / detune, in.t) + 0.7 * saw(in.freq * detune, in.t)
+    right_raw = saw(in.freq * detune, in.t) + 0.7 * saw(in.freq / detune, in.t)
+    center = 0.5 * (left_raw + right_raw)
+    sub = p.sub_mix * sin(TAU * in.freq * 0.5 * in.t)
+    left_source = mix(center, left_raw, p.stereo_width) / 1.7 + sub
+    right_source = mix(center, right_raw, p.stereo_width) / 1.7 + sub
+
+    filter_env = exp(-6 * in.t / p.filter_decay_s)
+    cutoff = clamp(p.cutoff_hz * pow(2, p.filter_env_oct * filter_env),
+        25, in.sr * 0.45)
+    alpha = 1 - exp(-TAU * cutoff / in.sr)
+    lowpass_l = lowpass_l + alpha * (tanh(p.drive * left_source) - lowpass_l)
+    lowpass_r = lowpass_r + alpha * (tanh(p.drive * right_source) - lowpass_r)
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * decay * release
+    midi_pan = clamp(in.midi_pan, -1, 1)
+    out.wave_l = amp * sqrt((1 - midi_pan) * 0.5) * lowpass_l
+    out.wave_r = amp * sqrt((1 + midi_pan) * 0.5) * lowpass_r
+    out.l_limit = p.release_s
+}

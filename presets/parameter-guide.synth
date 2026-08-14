@@ -1,38 +1,68 @@
-# PARAMETER GUIDE — p_*パラメーターの記法サンプル
+# PARAMETER GUIDE — DSL v2とStandard DSPを試せる実行可能なリファレンス
 #
-# ユーザーパラメーターは次の形で宣言します:
-#   p_name = param(default, minimum, maximum, step)
-#
-# - 名前は必ずp_で始めます。Play modeでのラベルにもなります。
-# - defaultはプリセット読み込み時の値です。
-# - minimum / maximumはノブ、スライダー、VSTオートメーションの範囲です。
-# - stepは省略できます。連続値は0、段階値は0.01や1などを指定します。
-# - パラメーターは、それを使う式より前に宣言します。
-#
-# Play modeでパラメーターを右クリックすると、Knob / Slider / Toggleの選択、
-# リセット、値のコピー・貼り付けができます。Arrangeを押すとコントロールをドラッグでき、
-# 右下のハンドルでサイズを変更できます。宣言順がVSTオートメーション順なので、
-# プリセットにあるp_*行の順番は保ってください。
+# parameterは最初のfnより前に宣言します。
+# p.name = param(default, min, max, step, cc_link?)
+# 最後のMIDI CC番号は省略可能です。宣言順でVST automationとPlay controlsへ公開されます。
+p.gain = param(0.7, 0, 1.5, 0.01)
+p.attack_ms = param(16, 1, 500, 1)
+p.release_s = param(1.8, 0.1, 8, 0.01)
+p.cutoff_hz = param(2200, 80, 16000, 1, 74)
+p.resonance = param(0.7, 0.1, 1.5, 0.01)
+p.delay_mix = param(0.18, 0, 0.8, 0.01)
+p.width = param(1.15, 0, 1.6, 0.01)
 
-# 以下の式が受け取るのは、パラメーターに指定した実値です。
-p_gain = param(0.8, 0, 1.5, 0.01)
-p_attack_ms = param(12, 1, 500, 1)
-p_release_s = param(1.5, 0.1, 8, 0.01)
-p_triangle_mix = param(0.25, 0, 1, 0.01)
-p_pan_spread = param(0.15, 0, 1, 0.01)
+# 通常関数はbundleを受け取ってbundleを返します。fieldは必要な分だけ代入します。
+fn osc.detuned(in) -> out {
+    ratio = cent_ratio(in.detune)
+    out.left = saw(in.freq / ratio, in.t)
+    out.right = saw(in.freq * ratio, in.t)
+}
 
-# Attack Msを大きくすると、最大音量に達するまで長くなります。
-attack = min(t * 1000 / p_attack_ms, 1)
-# Release Sを大きくすると、必ずリリースが長くなります。単位は秒です。
-release = exp(-8 * l / p_release_s)
+# Entry Point: noteはVoiceごとに毎sample評価されます。
+fn note(in, p) -> out {
+    # scalar stateは初期値が必須。voiceはVoice単位、globalはfilter内で使います。
+    f32 voice phase = 0
+    phase = fract(phase + in.freq / in.sr)
+    osc.in.freq = in.freq
+    osc.in.t = in.t
+    osc.in.detune = 7
+    osc = osc.detuned(osc.in)
 
-fundamental = sin(TAU * freq * t)
-triangle_layer = triangle(freq * 2, t)
-tone = mix(fundamental, triangle_layer, p_triangle_mix)
+    attack = min(in.t * 1000 / p.attack_ms, 1)
+    release = exp(-8 * in.l / p.release_s)
+    source_l = osc.left + 0.18 * sin(TAU * phase * 2)
+    source_r = osc.right + 0.18 * sin(TAU * phase * 2.01)
+    # stateful DSPはcall siteごとにstateを持ち、note内ではVoiceごとに独立します。
+    left = filter.svf.lp(source_l, p.cutoff_hz, p.resonance, in.sr)
+    right = filter.svf.lp(source_r, p.cutoff_hz, p.resonance, in.sr)
+    pan = pan.equal_power(1, in.midi_pan)
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * release
+    out.wave_l = amp * pan.left * left
+    out.wave_r = amp * pan.right * right
+    # release後の処理上限。noteには必須です。
+    out.l_limit = p.release_s
+}
 
-# sはMIDIベロシティ、midi_panはMIDI CC10のパンです。エンジンがMIDIチャンネル音量と
-# エクスプレッションを適用するため、意図的に非線形の効果を作る場合以外は
-# ここでvol / mexprを掛けないでください。
-wave = p_gain * s * attack * release * tone
-pan = midi_pan + p_pan_spread * sin(voice * 2.4)
-l_limit = p_release_s
+# filterは全Voiceのmix後にPlugin全体で1回だけ呼ばれます。
+fn filter(in, p) -> out {
+    # RingBufは明示state。peek_linear(seconds)はfractional delayを補間します。
+    RingBuf<f32, 400ms> global history_l
+    RingBuf<f32, 400ms> global history_r
+    tap_l = history_l.peek_linear(173ms)
+    tap_r = history_r.peek_linear(241ms)
+    history_l = in.wave_l + tap_r * 0.38
+    history_r = in.wave_r + tap_l * 0.38
+
+    # biquad.*はb0/b1/b2/a1/a2を持つ係数bundleを返します。
+    coeff = biquad.lowpass(p.cutoff_hz, 0.707, in.sr)
+    coeff_check = coeff.b0 + coeff.b1 + coeff.b2 + coeff.a1 + coeff.a2
+    filtered_l = filter.biquad.lp(in.wave_l + tap_l * p.delay_mix,
+        p.cutoff_hz + coeff_check * 0, 0.707, in.sr)
+    filtered_r = filter.biquad.lp(in.wave_r + tap_r * p.delay_mix,
+        p.cutoff_hz + coeff_check * 0, 0.707, in.sr)
+    wet_l = reverb.schroeder(filtered_l, 0.45, 0.62, 0.35)
+    wet_r = reverb.schroeder(filtered_r, 0.45, 0.62, 0.35)
+    stereo = stereo.width(wet_l, wet_r, p.width)
+    out.wave_l = limiter(stereo.left, 0.92, 2ms, 80ms)
+    out.wave_r = limiter(stereo.right, 0.92, 2ms, 80ms)
+}

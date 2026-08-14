@@ -1,15 +1,15 @@
-# MIDI Bass — ベロシティでアタック、プレッシャーで倍音、MWでパルスレイヤーを加えます。
-# コードでのベース演奏にも対応する完全なポリフォニック音色です。
-p_gain = param(0.72, 0, 1.4, 0.01)
-p_drive = param(1.8, 0.4, 5, 0.01)
-p_release_s = param(0.32, 0.04, 3, 0.01)
-p_pulse_width = param(0.42, 0.08, 0.92, 0.01)
-
-attack = min(t / (0.012 - 0.008 * s), 1)
-release = exp(-8 * l / p_release_s)
-fundamental = saw(freq, t)
-pulse_layer = mw * 0.42 * square(freq * 0.5, t, p_pulse_width)
-pressure_harmonic = 0.28 * pressure * sin(TAU * freq * 2 * t)
-wave = p_gain * s * attack * release * tanh(p_drive * (fundamental + pulse_layer + pressure_harmonic))
-pan = midi_pan
-l_limit = p_release_s
+p.gain = param(0.72, 0, 1.4, 0.01)
+p.drive = param(1.8, 0.4, 5, 0.01)
+p.release_s = param(0.32, 0.04, 3, 0.01)
+p.pulse_width = param(0.42, 0.08, 0.92, 0.01)
+fn note(in, p) -> out {
+    attack = min(in.t / (0.012 - 0.008 * in.s), 1)
+    release = exp(-8 * in.l / p.release_s)
+    fundamental = saw(in.freq, in.t)
+    pulse_layer = in.mw * 0.42 * pulse(in.freq * 0.5, in.t, p.pulse_width)
+    pressure_harmonic = 0.28 * in.pressure * sin(TAU * in.freq * 2 * in.t)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release
+        * tanh(p.drive * (fundamental + pulse_layer + pressure_harmonic))
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

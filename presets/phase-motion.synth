@@ -1,0 +1,21 @@
+# PHASE MOTION — phase modulationとflangerによるMotion Lead
+p.gain = param(0.52, 0, 1.5, 0.01)
+p.attack_s = param(0.04, 0.001, 2, 0.001)
+p.release_s = param(1.2, 0.02, 8, 0.01)
+p.mod_ratio = param(1.5, 0.1, 8, 0.01)
+p.mod_index = param(2.1, 0, 12, 0.01, 74)
+p.flange_depth_ms = param(3.4, 0, 15, 0.1)
+p.flange_feedback = param(0.32, 0, 0.9, 0.01)
+p.tone_hz = param(6500, 100, 16000, 1, 74)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-7 * in.l / p.release_s)
+    pm = p.mod_index * sin(TAU * in.freq * p.mod_ratio * in.t)
+    raw = sin(TAU * in.freq * in.t + pm)
+    modulated = flanger(raw, 0.19, p.flange_depth_ms * 1ms, p.flange_feedback)
+    tone = filter.biquad.lp(modulated, p.tone_hz, 0.8, in.sr)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

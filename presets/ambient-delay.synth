@@ -1,0 +1,32 @@
+# AMBIENT DELAY — multitap echoとFDN reverbを持つ空間Pad
+p.gain = param(0.38, 0, 1.5, 0.01)
+p.attack_s = param(0.65, 0.02, 6, 0.01)
+p.release_s = param(5.5, 0.2, 16, 0.1)
+p.detune_cent = param(7, 0, 30, 0.1)
+p.brightness = param(0.42, 0, 1, 0.01, 74)
+p.delay_mix = param(0.32, 0, 0.85, 0.01)
+p.feedback = param(0.42, 0, 0.88, 0.01)
+p.space = param(0.7, 0, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-7 * in.l / p.release_s)
+    ratio = cent_ratio(p.detune_cent)
+    left = triangle(in.freq / ratio, in.t) + p.brightness * 0.4 * saw(in.freq, in.t)
+    right = triangle(in.freq * ratio, in.t) + p.brightness * 0.4 * saw(in.freq, in.t)
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * release
+    out.wave_l = amp * left * pan_l(in.midi_pan)
+    out.wave_r = amp * right * pan_r(in.midi_pan)
+    out.l_limit = p.release_s
+}
+
+fn filter(in, p) -> out {
+    echo_l = delay.feedback(in.wave_l, 310ms, p.feedback)
+    echo_r = delay.feedback(in.wave_r, 457ms, p.feedback)
+    taps_l = delay.multitap(in.wave_l, 93ms, 181ms, 367ms)
+    taps_r = delay.multitap(in.wave_r, 127ms, 263ms, 503ms)
+    left = mix(in.wave_l, echo_l + 0.25 * (taps_l.tap1 + taps_l.tap2 + taps_l.tap3), p.delay_mix)
+    right = mix(in.wave_r, echo_r + 0.25 * (taps_r.tap1 + taps_r.tap2 + taps_r.tap3), p.delay_mix)
+    out.wave_l = reverb.fdn(left, p.space, 0.76, 0.42)
+    out.wave_r = reverb.fdn(right, p.space, 0.76, 0.42)
+}

@@ -1,0 +1,33 @@
+# ANALOG LEAD — Vibrato、SVF、soft driveを組み合わせたLead
+p.gain = param(0.58, 0, 1.5, 0.01)
+p.attack_s = param(0.009, 0.001, 1, 0.001)
+p.decay_s = param(0.28, 0.02, 3, 0.01)
+p.sustain = param(0.78, 0, 1, 0.01)
+p.release_s = param(0.38, 0.03, 4, 0.01)
+p.saw_mix = param(0.68, 0, 1, 0.01)
+p.pulse_width = param(0.38, 0.06, 0.94, 0.01)
+p.sub_mix = param(0.14, 0, 0.8, 0.01)
+p.detune_cent = param(5, 0, 30, 0.1)
+p.brightness = param(0.82, 0, 1, 0.01, 74)
+p.drive = param(1.45, 0.5, 6, 0.01)
+p.vibrato_hz = param(5.4, 0.1, 12, 0.1)
+p.vibrato_cent = param(18, 0, 100, 0.1)
+p.pressure_vibrato = param(0.65, 0, 1, 0.01)
+p.pan = param(0, -1, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    decay = p.sustain + (1 - p.sustain) * exp(-5 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    vib = (in.mw + p.pressure_vibrato * in.pressure) * p.vibrato_cent
+    freq = in.freq * cent_ratio(vib * sin(TAU * p.vibrato_hz * in.t))
+    ratio = cent_ratio(p.detune_cent)
+    raw = mix(pulse(freq, in.t, p.pulse_width),
+        0.5 * (saw(freq / ratio, in.t) + saw(freq * ratio, in.t)), p.saw_mix)
+        + p.sub_mix * triangle(freq * 0.5, in.t)
+    cutoff = mix(380, 8500, p.brightness)
+    tone = filter.svf.lp(drive(raw, p.drive), cutoff, 0.75, in.sr)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * decay * release * tone
+    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.l_limit = p.release_s
+}

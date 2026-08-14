@@ -1,0 +1,34 @@
+# CHIP LEAD — Pulse、Octave、Bit量を調整できる8-bit系Lead
+p.gain = param(0.5, 0, 1.5, 0.01)
+p.attack_s = param(0.003, 0.001, 0.5, 0.001)
+p.decay_s = param(0.16, 0.01, 2, 0.01)
+p.sustain = param(0.78, 0, 1, 0.01)
+p.release_s = param(0.14, 0.01, 2, 0.01)
+p.octave = param(1, -2, 3, 1)
+p.duty = param(0.25, 0.03, 0.97, 0.01)
+p.fifth_mix = param(0.16, 0, 0.8, 0.01)
+p.sub_mix = param(0.08, 0, 0.8, 0.01)
+p.noise_mix = param(0.015, 0, 0.3, 0.001)
+p.bit_levels = param(16, 2, 64, 1)
+p.vibrato_hz = param(6.2, 0.2, 16, 0.1)
+p.vibrato_cent = param(9, 0, 100, 0.1)
+p.pan = param(0, -1, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    decay = p.sustain + (1 - p.sustain) * exp(-6 * in.t / p.decay_s)
+    release = exp(-10 * in.l / p.release_s)
+    vibrato = p.vibrato_cent * in.mw * sin(TAU * p.vibrato_hz * in.t)
+    freq = in.freq * semitone_ratio(p.octave * 12) * cent_ratio(vibrato)
+    pulse_main = pulse(freq, in.t, p.duty)
+    fifth = p.fifth_mix * pulse(freq * 1.5, in.t, 0.5)
+    sub = p.sub_mix * square(freq * 0.5, in.t)
+    raw = (pulse_main + fifth + sub + p.noise_mix * noise())
+        / max(1 + p.fifth_mix + p.sub_mix + p.noise_mix, 1)
+    crushed = floor(raw * p.bit_levels + 0.5) / p.bit_levels
+
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * decay * release
+        * crushed
+    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.l_limit = p.release_s
+}

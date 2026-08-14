@@ -1,0 +1,55 @@
+# SUPERSAW — 7 Voiceの広がりを細かく調整できる定番スタック
+p.gain = param(0.58, 0, 1.5, 0.01)
+p.attack_s = param(0.018, 0.001, 2, 0.001)
+p.decay_s = param(0.8, 0.03, 6, 0.01)
+p.sustain = param(0.82, 0, 1, 0.01)
+p.release_s = param(1.2, 0.05, 8, 0.01)
+p.detune_cent = param(14, 0, 45, 0.1)
+p.spread = param(0.78, 0, 1, 0.01)
+p.stereo_width = param(0.9, 0, 1.5, 0.01)
+p.brightness = param(0.86, 0, 1, 0.01, 74)
+p.sub_mix = param(0.12, 0, 0.7, 0.01)
+p.air_mix = param(0.05, 0, 0.4, 0.01)
+p.drive = param(1.25, 0.5, 4, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    decay = p.sustain + (1 - p.sustain) * exp(-5 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * decay * release
+
+    d1 = cent_ratio(p.detune_cent * 0.28)
+    d2 = cent_ratio(p.detune_cent * 0.62)
+    d3 = cent_ratio(p.detune_cent)
+    center = saw(in.freq, in.t)
+    left_stack = center
+        + saw(in.freq / d1, in.t)
+        + saw(in.freq / d2, in.t)
+        + saw(in.freq / d3, in.t)
+        + saw(in.freq * d1, in.t) * (1 - 0.28 * p.spread)
+        + saw(in.freq * d2, in.t) * (1 - 0.55 * p.spread)
+        + saw(in.freq * d3, in.t) * (1 - 0.82 * p.spread)
+    right_stack = center
+        + saw(in.freq * d1, in.t)
+        + saw(in.freq * d2, in.t)
+        + saw(in.freq * d3, in.t)
+        + saw(in.freq / d1, in.t) * (1 - 0.28 * p.spread)
+        + saw(in.freq / d2, in.t) * (1 - 0.55 * p.spread)
+        + saw(in.freq / d3, in.t) * (1 - 0.82 * p.spread)
+
+    soft = sin(TAU * in.freq * in.t)
+    left_tone = mix(soft * 5, left_stack, p.brightness) / 7
+    right_tone = mix(soft * 5, right_stack, p.brightness) / 7
+    sub = p.sub_mix * sin(TAU * in.freq * 0.5 * in.t)
+    air = p.air_mix * noise() * (0.35 + 0.65 * p.brightness)
+    middle = 0.5 * (left_tone + right_tone)
+    wide_l = mix(middle, left_tone, p.stereo_width)
+    wide_r = mix(middle, right_tone, p.stereo_width)
+
+    midi_pan = clamp(in.midi_pan, -1, 1)
+    pan_l = sqrt((1 - midi_pan) * 0.5)
+    pan_r = sqrt((1 + midi_pan) * 0.5)
+    out.wave_l = amp * pan_l * tanh(p.drive * (wide_l + sub + air))
+    out.wave_r = amp * pan_r * tanh(p.drive * (wide_r + sub - air))
+    out.l_limit = p.release_s
+}

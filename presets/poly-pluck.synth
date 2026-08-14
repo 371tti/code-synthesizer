@@ -1,0 +1,21 @@
+# POLY PLUCK — Karplus-Strongで作る軽い弦のPluck
+p.gain = param(0.72, 0, 1.5, 0.01)
+p.decay_s = param(1.1, 0.08, 8, 0.01)
+p.release_s = param(0.45, 0.02, 4, 0.01)
+p.damping = param(0.72, 0.05, 0.99, 0.01)
+p.brightness = param(0.56, 0, 1, 0.01, 74)
+p.pick_noise = param(0.72, 0, 1, 0.01)
+p.body_mix = param(0.22, 0, 1, 0.01)
+p.spread = param(0.35, 0, 1, 0.01)
+
+fn note(in, p) -> out {
+    pluck = p.pick_noise * exciter.noise(in.t, 9ms) + (1 - p.pick_noise) * exciter.impulse(in.t, 3ms)
+    string = string.karplus(pluck, in.freq, p.decay_s, p.damping)
+    body = resonator(string, in.freq * 2.01, p.decay_s * 0.35)
+    release = exp(-9 * in.l / p.release_s)
+    tone = filter.onepole.lp(string + p.body_mix * body,
+        mix(650, 12000, p.brightness), in.sr)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * release * tone
+    out.pan = clamp(in.midi_pan + p.spread * sin(in.voice * 2.17), -1, 1)
+    out.l_limit = p.release_s
+}

@@ -1,16 +1,19 @@
-# CC74 Pluck — CC74で明るさを変え、MWで控えめな1オクターブ上のレイヤーを加えます。
-p_gain = param(0.7, 0, 1.5, 0.01)
-p_decay_s = param(0.42, 0.04, 3, 0.01)
-p_release_s = param(1.1, 0.1, 6, 0.01)
-p_resonance = param(0.35, 0, 1, 0.01)
-
-attack = min(t / 0.002, 1)
-body = exp(-5.8 * t / p_decay_s)
-release = exp(-8 * l / p_release_s)
-brightness = 0.1 + 0.9 * cc(74)
-pluck = saw(freq, t) * brightness + (1 - brightness) * sin(TAU * freq * t)
-octave = mw * 0.22 * sin(TAU * freq * 2 * t)
-ring = p_resonance * exp(-15 * t) * sin(TAU * freq * 3.01 * t)
-wave = p_gain * s * attack * release * body * tanh(1.3 * (pluck + octave + ring))
-pan = midi_pan
-l_limit = p_release_s
+# CC74 Pluck — CC74で明るさを変え、MWで1オクターブ上を加えます。
+p.gain = param(0.7, 0, 1.5, 0.01)
+p.decay_s = param(0.42, 0.04, 3, 0.01)
+p.release_s = param(1.1, 0.1, 6, 0.01)
+p.resonance = param(0.35, 0, 1, 0.01, 74)
+fn note(in, p) -> out {
+    attack = min(in.t / 0.002, 1)
+    body = exp(-5.8 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    brightness = 0.1 + 0.9 * in.cc(74)
+    pluck = saw(in.freq, in.t) * brightness
+        + (1 - brightness) * sin(TAU * in.freq * in.t)
+    octave = in.mw * 0.22 * sin(TAU * in.freq * 2 * in.t)
+    ring = p.resonance * exp(-15 * in.t) * sin(TAU * in.freq * 3.01 * in.t)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * body
+        * tanh(1.3 * (pluck + octave + ring))
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

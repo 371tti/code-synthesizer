@@ -1,11 +1,11 @@
-p_cc74_depth = param(7, 0, 16, 0.1)
-p_fm = param(1, 0, 4, 0.01)
-p_release_s = param(2, 0.2, 12, 0.1)
-brightness = 1 + p_cc74_depth*cc(74)
-fm = brightness*p_fm*mw*sin(TAU*freq*2*t)
-# MIDIの音量とエクスプレッションはエンジンが適用済みです。ここでは二重ゲインを避けるため、
-# モジュレーションホイール、CC74、エクスプレッションは音色とエンベロープだけを変えます。
-release = exp(-(6 / p_release_s + 8*(1-mexpr))*l)
-wave = s*release*sin(TAU*freq*t + fm)
-pan = midi_pan
-l_limit = p_release_s
+p.cc74_depth = param(7, 0, 16, 0.1, 74)
+p.fm = param(1, 0, 4, 0.01)
+p.release_s = param(2, 0.2, 12, 0.1)
+fn note(in, p) -> out {
+    brightness = 1 + p.cc74_depth * in.cc(74)
+    fm = brightness * p.fm * in.mw * sin(TAU * in.freq * 2 * in.t)
+    release = exp(-(6 / p.release_s + 8 * (1 - in.mexpr)) * in.l)
+    out.wave = in.s * in.vol * in.mexpr * release * sin(TAU * in.freq * in.t + fm)
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

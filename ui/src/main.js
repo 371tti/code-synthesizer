@@ -22,6 +22,7 @@ const INPUT_DOCS = {
 const OUTPUT_DOCS = {
   wave: '必須のモノラルボイス出力。', pan: '任意のボイスパン、-1–1。',
   l_limit: '必須。ノートを離してからボイスを終了するまでの秒数。',
+  wave_l: 'true stereoの左出力。', wave_r: 'true stereoの右出力。',
 };
 const FUNCTION_DOCS = {
   sin: ['sin(x)', 'Sine.'], cos: ['cos(x)', 'Cosine.'], tan: ['tan(x)', 'Tangent.'],
@@ -34,24 +35,121 @@ const FUNCTION_DOCS = {
   acos: ['acos(x)', 'Arc cosine.'], atan: ['atan(x)', 'Arc tangent.'], atan2: ['atan2(y, x)', 'Two-argument arc tangent.'],
   min: ['min(a, b)', 'Smaller value.'], max: ['max(a, b)', 'Larger value.'], pow: ['pow(x, y)', 'Power.'],
   mod: ['mod(x, y)', 'Remainder.'], clamp: ['clamp(x, min, max)', 'Clamp into range.'],
-  mix: ['mix(a, b, amount)', 'Linear interpolation.'], cc: ['cc(number)', 'MIDI CC, 0–1.'], noise: ['noise()', 'White noise.'],
+  mix: ['mix(a, b, amount)', 'Linear interpolation.'], step: ['step(edge, x)', 'Step.'],
+  smoothstep: ['smoothstep(edge0, edge1, x)', 'Smooth Hermite step.'], select: ['select(condition, yes, no)', '0ならfalse側、それ以外はtrue側。'],
+  mtof: ['mtof(note)', 'MIDI note to Hz.'], ftom: ['ftom(freq)', 'Hz to MIDI note.'],
+  dbtoa: ['dbtoa(db)', 'dB to amplitude.'], atodb: ['atodb(amp)', 'Amplitude to dB.'],
+  cent_ratio: ['cent_ratio(cents)', 'Cent ratio.'], semitone_ratio: ['semitone_ratio(st)', 'Semitone ratio.'],
+  noise: ['noise()', 'White noise.'],
   saw: ['saw(freq, t)', 'Band-limited saw.'], triangle: ['triangle(freq, t)', 'Triangle oscillator.'],
-  square: ['square(freq, t, duty)', 'Band-limited pulse.'], pulse: ['pulse(freq, t, duty)', 'Alias for square.'],
+  square: ['square(freq, t)', '50% duty band-limited square.'], pulse: ['pulse(freq, t, duty)', 'Variable duty pulse.'],
 };
+
+Object.assign(FUNCTION_DOCS, {
+  'in.cc': ['in.cc(number)', '指定したMIDI CCの現在値、0..1。Entry Point内で使用します。'],
+  exp2: ['exp2(x)', '2のx乗。Pitchや周波数比の計算向け。'],
+  wrap: ['wrap(x, min, max)', '値を指定範囲へ周期的にwrapします。'],
+  hypot: ['hypot(x, y)', 'sqrt(x*x + y*y)を安定して計算します。'],
+  sinc: ['sinc(x)', '正規化sinc関数。'],
+  hash: ['hash(x)', '入力から決定論的な-1..1の値を生成します。'],
+  hash2: ['hash2(x, y)', '2入力から決定論的な-1..1の値を生成します。'],
+  fold: ['fold(x, min, max)', '範囲外の値を境界で反射します。'],
+  pan_l: ['pan_l(pan)', 'Equal-Power Panの左gain。'],
+  pan_r: ['pan_r(pan)', 'Equal-Power Panの右gain。'],
+  onepole_coeff: ['onepole_coeff(freq, sr)', '1-pole filterの係数。'],
+  'window.hann': ['window.hann(x)', '0..1位置のHann window。'],
+  'window.hamming': ['window.hamming(x)', '0..1位置のHamming window。'],
+  'window.blackman': ['window.blackman(x)', '0..1位置のBlackman window。'],
+  'biquad.lowpass': ['biquad.lowpass(freq, q, sr)', 'b0/b1/b2/a1/a2係数bundleを返します。'],
+  'biquad.highpass': ['biquad.highpass(freq, q, sr)', 'High-Pass Biquad係数bundle。'],
+  'biquad.bandpass': ['biquad.bandpass(freq, q, sr)', 'Band-Pass Biquad係数bundle。'],
+  'biquad.notch': ['biquad.notch(freq, q, sr)', 'Notch Biquad係数bundle。'],
+  'biquad.allpass': ['biquad.allpass(freq, q, sr)', 'All-Pass Biquad係数bundle。'],
+  'biquad.peak': ['biquad.peak(freq, q, gain_db, sr)', 'Peaking EQ係数bundle。'],
+  'biquad.lowshelf': ['biquad.lowshelf(freq, q, gain_db, sr)', 'Low-Shelf EQ係数bundle。'],
+  'biquad.highshelf': ['biquad.highshelf(freq, q, gain_db, sr)', 'High-Shelf EQ係数bundle。'],
+  'filter.onepole.lp': ['filter.onepole.lp(x, freq, sr)', '自動state付き1-pole Low-Pass。'],
+  'filter.onepole.hp': ['filter.onepole.hp(x, freq, sr)', '自動state付き1-pole High-Pass。'],
+  'filter.svf.lp': ['filter.svf.lp(x, freq, q, sr)', 'State Variable Low-Pass。'],
+  'filter.svf.hp': ['filter.svf.hp(x, freq, q, sr)', 'State Variable High-Pass。'],
+  'filter.svf.bp': ['filter.svf.bp(x, freq, q, sr)', 'State Variable Band-Pass。'],
+  'filter.svf.notch': ['filter.svf.notch(x, freq, q, sr)', 'State Variable Notch。'],
+  'filter.biquad.lp': ['filter.biquad.lp(x, freq, q, sr)', 'Biquad Low-Pass。'],
+  'filter.biquad.hp': ['filter.biquad.hp(x, freq, q, sr)', 'Biquad High-Pass。'],
+  'filter.biquad.bp': ['filter.biquad.bp(x, freq, q, sr)', 'Biquad Band-Pass。'],
+  'filter.biquad.notch': ['filter.biquad.notch(x, freq, q, sr)', 'Biquad Notch。'],
+  'filter.biquad.allpass': ['filter.biquad.allpass(x, freq, q, sr)', 'Biquad All-Pass。'],
+  'filter.biquad.peak': ['filter.biquad.peak(x, freq, q, gain_db, sr)', 'Peaking EQ。'],
+  'filter.biquad.lowshelf': ['filter.biquad.lowshelf(x, freq, gain_db, sr)', 'Low-Shelf EQ。'],
+  'filter.biquad.highshelf': ['filter.biquad.highshelf(x, freq, gain_db, sr)', 'High-Shelf EQ。'],
+  dc_block: ['dc_block(x)', 'DC offsetを除去します。'],
+  'delay.fixed': ['delay.fixed(x, time)', '固定時間Delay。timeは秒です。'],
+  'delay.variable': ['delay.variable(x, time)', '線形補間付き可変Delay。'],
+  'delay.feedback': ['delay.feedback(x, time, feedback)', 'Feedback付きDelay。'],
+  'delay.multitap': ['delay.multitap(x, time1, time2, ...)', 'tap1..tap8 bundleを返します。'],
+  'comb.feedforward': ['comb.feedforward(x, time, gain)', 'Feed-Forward Comb Filter。'],
+  'comb.feedback': ['comb.feedback(x, time, feedback)', 'Feedback Comb Filter。'],
+  allpass: ['allpass(x, time, feedback)', 'Delay型All-Pass Filter。'],
+  resonator: ['resonator(x, freq, decay)', '周波数と減衰秒を指定する共鳴器。'],
+  'resonator.q': ['resonator.q(x, freq, q)', 'Q指定の共鳴器。'],
+  modal: ['modal(x, freq, decay, gain)', '単一Modal Resonance。'],
+  'string.karplus': ['string.karplus(x, freq, decay, damping)', 'Karplus-Strong plucked string。'],
+  waveguide: ['waveguide(x, delay, feedback, damping)', 'Digital Waveguideの基本要素。'],
+  'exciter.impulse': ['exciter.impulse(t, decay)', '短いImpulse励振。'],
+  'exciter.noise': ['exciter.noise(t, decay)', '決定論的Noise Burst励振。'],
+  chorus: ['chorus(x, rate, depth, delay)', '可変Delay Chorus。depth/delayは秒です。'],
+  flanger: ['flanger(x, rate, depth, feedback)', '短い可変Delay Flanger。depthは秒です。'],
+  phaser: ['phaser(x, rate, depth, feedback)', '4-stage All-Pass Phaser。'],
+  tremolo: ['tremolo(x, rate, depth)', '振幅を周期変調します。'],
+  vibrato: ['vibrato(x, rate, depth)', '補間DelayでPitchを周期変調します。depthは秒です。'],
+  drive: ['drive(x, amount)', '正規化tanh Overdrive。'],
+  saturate: ['saturate(x, amount)', '滑らかなSaturation。'],
+  waveshaper: ['waveshaper(x, drive, mix)', 'Dry/Wet付きWaveshaping。'],
+  wavefold: ['wavefold(x, amount)', 'Wave Folding。'],
+  bitcrush: ['bitcrush(x, bits)', '振幅を指定bit数へ量子化します。'],
+  downsample: ['downsample(x, factor)', 'Sample HoldによるSample Rate Reduction。'],
+  compressor: ['compressor(x, threshold, ratio, attack, release)', '振幅thresholdのCompressor。時間は秒です。'],
+  limiter: ['limiter(x, threshold, attack, release)', '振幅thresholdのLimiter。'],
+  gate: ['gate(x, threshold, attack, release)', 'Noise Gate。'],
+  envelope_follower: ['envelope_follower(x, attack, release)', '絶対振幅Envelopeを追跡します。'],
+  slew: ['slew(x, rise, fall)', '上昇・下降時間で変化速度を制限します。'],
+  smooth: ['smooth(x, time)', '値を時間方向に平滑化します。'],
+  sample_hold: ['sample_hold(x, rate)', '指定Hzで入力をsampleして保持します。'],
+  track_hold: ['track_hold(x, gate)', 'Gate中は追跡し、Gate Offで保持します。'],
+  'pan.equal_power': ['pan.equal_power(x, pan)', 'left/right stereo bundleを返します。'],
+  'stereo.mid': ['stereo.mid(l, r)', 'StereoのMid成分。'],
+  'stereo.side': ['stereo.side(l, r)', 'StereoのSide成分。'],
+  'stereo.width': ['stereo.width(l, r, width)', 'left/right幅調整bundleを返します。'],
+  'reverb.early': ['reverb.early(x, size)', '複数tapのEarly Reflection。'],
+  'reverb.schroeder': ['reverb.schroeder(x, room, decay, damping)', 'Comb + All-Pass Reverb。'],
+  'reverb.fdn': ['reverb.fdn(x, size, decay, damping)', '4-line Feedback Delay Network Reverb。'],
+});
+
+const RING_METHOD_DOCS = {
+  peek: ['peek(delay)', '指定秒数だけ過去を読み、同一sample内のcursorは移動しません。'],
+  peek_linear: ['peek_linear(delay)', 'fractional sample位置を線形補間して読みます。'],
+  len: ['len()', 'RingBuf容量をsample数で返します。'],
+  duration: ['duration()', 'RingBuf容量を秒で返します。'],
+};
+const FUNCTION_PATTERN = Object.keys(FUNCTION_DOCS)
+  .map(name => name.replaceAll('.', '\\.'))
+  .join('|');
 
 monaco.languages.register({ id: 'synth-dsl' });
 monaco.languages.setMonarchTokensProvider('synth-dsl', { tokenizer: { root: [
-  [/(#|\/\/).*$/, 'comment'], [/\bp_[A-Za-z0-9_]*\b/, 'parameter'], [/\b(?:TAU|PI|E|PHI)\b/, 'constant'],
-  [new RegExp(`\\b(?:${Object.keys(FUNCTION_DOCS).join('|')}|param)\\b(?=\\s*\\()`), 'function'],
-  [new RegExp(`\\b(?:${Object.keys(INPUT_DOCS).join('|')})\\b`), 'variable.predefined'],
-  [/\b(?:wave|pan|l_limit)\b(?=\s*=)/, 'type.identifier'], [/[A-Za-z_][\w]*/, 'identifier'],
-  [/(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i, 'number'], [/[=+\-*\/%^]/, 'operator'], [/[(),]/, 'delimiter'],
+  [/(#|\/\/).*$/, 'comment'], [/\bp(?:\.[A-Za-z_][\w]*)+\b/, 'parameter'], [/\b(?:TAU|PI|E|PHI)\b/, 'constant'],
+  [/\b(?:fn|f32|RingBuf|voice|note|global|in|out)\b/, 'keyword'],
+  [new RegExp(`\\b(?:${FUNCTION_PATTERN}|param)\\b(?=\\s*\\()`), 'function'],
+  [/\bin\.[A-Za-z_][\w]*/, 'variable.predefined'],
+  [/\bout\.(?:wave|wave_l|wave_r|pan|l_limit)\b/, 'type.identifier'], [/[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*/, 'identifier'],
+  [/(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:ms|us|s|k|m|u|g)?/i, 'number'],
+  [/(?:->|==|!=|<=|>=|[=+\-*\/%^<>])/, 'operator'], [/[(){},]/, 'delimiter'],
 ] } });
 monaco.languages.setLanguageConfiguration('synth-dsl', {
   wordPattern: /[A-Za-z_][A-Za-z0-9_]*/,
-  brackets: [['(', ')']],
-  autoClosingPairs: [{ open: '(', close: ')' }],
-  surroundingPairs: [{ open: '(', close: ')' }],
+  brackets: [['(', ')'], ['{', '}']],
+  autoClosingPairs: [{ open: '(', close: ')' }, { open: '{', close: '}' }],
+  surroundingPairs: [{ open: '(', close: ')' }, { open: '{', close: '}' }],
 });
 
 monaco.editor.defineTheme('math-synth', {
@@ -90,42 +188,137 @@ editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
 });
 
 function sourceSymbols(model) {
-  return [...new Set([...model.getValue().matchAll(/^\s*([A-Za-z_][\w]*)\s*=/gm)].map(match => match[1]))];
+  return [...new Set([...model.getValue().matchAll(/^\s*([A-Za-z_][\w.]*)\s*=/gm)].map(match => match[1]))];
+}
+function currentFunction(model, position) {
+  const source = model.getValueInRange(new monaco.Range(1, 1, position.lineNumber, position.column));
+  return [...source.matchAll(/\bfn\s+([A-Za-z_][\w.]*)\s*\([^)]*\)\s*->\s*out\s*\{/g)].at(-1)?.[1] || '';
 }
 
-monaco.languages.registerCompletionItemProvider('synth-dsl', {
-  triggerCharacters: ['_', '('],
-  provideCompletionItems(model, position) {
-    const word = model.getWordUntilPosition(position);
-    const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
-    const suggestions = [];
-    for (const [label, documentation] of Object.entries(INPUT_DOCS)) {
-      suggestions.push({ label, kind: monaco.languages.CompletionItemKind.Variable, insertText: label, detail: '実行時入力', documentation, range, sortText: `2-${label}` });
+function hierarchicalSourceSymbols(model) {
+  const source = model.getValue();
+  const symbols = new Map(sourceSymbols(model).map(name => [name, {}]));
+  for (const match of source.matchAll(/\bRingBuf\s*<[^>]+>\s+(?:voice|note|global)\s+([A-Za-z_][\w.]*)/g)) {
+    for (const [method, [signature, documentation]] of Object.entries(RING_METHOD_DOCS)) {
+      symbols.set(`${match[1]}.${method}`, { signature, documentation });
     }
-    for (const [label, documentation] of Object.entries(OUTPUT_DOCS)) {
-      suggestions.push({ label, kind: monaco.languages.CompletionItemKind.Field, insertText: `${label} = ` + '${1:0}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'シンセ出力', documentation, range, sortText: `1-${label}` });
+  }
+  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*biquad\./gm)) {
+    for (const field of ['b0', 'b1', 'b2', 'a1', 'a2']) symbols.set(`${match[1]}.${field}`, {});
+  }
+  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*(?:pan\.equal_power|stereo\.width)\s*\(/gm)) {
+    symbols.set(`${match[1]}.left`, {}); symbols.set(`${match[1]}.right`, {});
+  }
+  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*delay\.multitap\s*\(/gm)) {
+    for (let index = 1; index <= 8; index += 1) symbols.set(`${match[1]}.tap${index}`, {});
+  }
+  return symbols;
+}
+
+function hierarchicalCompletions(model, position) {
+  const line = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+  const typed = line.match(/[A-Za-z_][\w.]*$/)?.[0] || '';
+  const dot = typed.lastIndexOf('.');
+  const parent = dot >= 0 ? typed.slice(0, dot + 1) : '';
+  const fragment = dot >= 0 ? typed.slice(dot + 1) : typed;
+  const range = new monaco.Range(
+    position.lineNumber,
+    position.column - fragment.length,
+    position.lineNumber,
+    position.column,
+  );
+  const scope = currentFunction(model, position);
+  const inputNames = scope === 'filter'
+    ? ['wave_l', 'wave_r', 'sr', 'tempo', 'beat', 'bar', 'ppq', 'playing', 'mw', 'vol', 'midi_pan', 'mexpr', 'sustain', 'program']
+    : Object.keys(INPUT_DOCS);
+  const descriptors = [];
+  for (const label of inputNames) {
+    descriptors.push({ name: `in.${label}`, kind: monaco.languages.CompletionItemKind.Variable, detail: '実行時入力', documentation: INPUT_DOCS[label], sort: '2' });
+  }
+  for (const [label, documentation] of Object.entries(OUTPUT_DOCS)) {
+    descriptors.push({ name: `out.${label}`, kind: monaco.languages.CompletionItemKind.Field, detail: 'Entry output', documentation, sort: '1' });
+  }
+  for (const [name, [signature, documentation]] of Object.entries(FUNCTION_DOCS)) {
+    descriptors.push({ name, kind: monaco.languages.CompletionItemKind.Function, detail: signature, documentation, signature, sort: '3' });
+  }
+  for (const [name, metadata] of hierarchicalSourceSymbols(model)) {
+    descriptors.push({
+      name,
+      kind: name.startsWith('p.') ? monaco.languages.CompletionItemKind.Property : monaco.languages.CompletionItemKind.Variable,
+      detail: metadata.signature || (name.startsWith('p.') ? 'ユーザーパラメーター' : 'local / qualified value'),
+      documentation: metadata.documentation,
+      signature: metadata.signature,
+      sort: '1',
+    });
+  }
+
+  const suggestions = [];
+  const seen = new Set();
+  for (const descriptor of descriptors) {
+    if (!descriptor.name.startsWith(parent)) continue;
+    const remainder = descriptor.name.slice(parent.length);
+    if (!remainder) continue;
+    const separator = remainder.indexOf('.');
+    const segment = separator >= 0 ? remainder.slice(0, separator) : remainder;
+    const hasChildren = separator >= 0;
+    const key = `${parent}${segment}${hasChildren ? '.' : ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (hasChildren) {
+      suggestions.push({
+        label: `${segment}.`,
+        kind: monaco.languages.CompletionItemKind.Module,
+        insertText: `${segment}.`,
+        detail: `${parent}${segment} namespace`,
+        range,
+        sortText: `0-${segment}`,
+        command: { id: 'editor.action.triggerSuggest', title: '次の候補を表示' },
+      });
+      continue;
     }
-    for (const [label, [signature, documentation]] of Object.entries(FUNCTION_DOCS)) {
-      const raw = signature.slice(signature.indexOf('(') + 1, -1);
-      const args = raw ? raw.split(', ').map((arg, index) => '${' + (index + 1) + ':' + arg + '}').join(', ') : '';
-      suggestions.push({ label, kind: monaco.languages.CompletionItemKind.Function, insertText: `${label}(${args})`, insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: signature, documentation, range, sortText: `3-${label}` });
+    let insertText = segment;
+    let insertTextRules;
+    if (descriptor.signature) {
+      const raw = descriptor.signature.slice(descriptor.signature.indexOf('(') + 1, -1);
+      const args = raw
+        ? raw.split(', ').map((argument, index) => '${' + (index + 1) + ':' + argument + '}').join(', ')
+        : '';
+      insertText = `${segment}(${args})`;
+      insertTextRules = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
     }
     suggestions.push({
+      label: segment,
+      kind: descriptor.kind,
+      insertText,
+      insertTextRules,
+      detail: descriptor.detail,
+      documentation: descriptor.documentation,
+      range,
+      sortText: `${descriptor.sort}-${segment}`,
+    });
+  }
+  if (!parent) {
+    suggestions.push({
       label: 'param', kind: monaco.languages.CompletionItemKind.Snippet,
-      insertText: 'p_${1:name} = param(${2:0.5}, ${3:0}, ${4:1}, ${5:0.01})',
+      insertText: 'p.${1:name} = param(${2:0.5}, ${3:0}, ${4:1}, ${5:0.01}${6:, 74})',
       insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
       detail: 'Play mode用VSTパラメーターを宣言',
       documentation: 'ホストからオートメーションでき、Play modeで自由に配置できるコントロールを作成します。', range, sortText: '0-param',
     });
     suggestions.push({
-      label: 'voice template', kind: monaco.languages.CompletionItemKind.Snippet,
-      insertText: 'attack = clamp(t / ${1:0.008}, 0, 1)\nrelease = exp(-${2:6} * l)\nwave = s * attack * release * ${3|sin(TAU * freq * t),saw(freq, t),triangle(freq, t)|}\npan = midi_pan\nl_limit = ${4:1.0}',
-      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: '演奏可能なボイスのひな形', range, sortText: '0-template',
+      label: 'note entry', kind: monaco.languages.CompletionItemKind.Snippet,
+      insertText: 'fn note(in, p) -> out {\n\tattack = clamp(in.t / ${1:0.008}, 0, 1)\n\trelease = exp(-${2:6} * in.l)\n\tout.wave = in.s * in.vol * in.mexpr * attack * release * ${3|sin(TAU * in.freq * in.t),saw(in.freq, in.t),triangle(in.freq, in.t)|}\n\tout.pan = in.midi_pan\n\tout.l_limit = ${4:1s}\n}',
+      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      detail: '演奏可能なボイスのひな形', range, sortText: '0-template',
     });
-    for (const label of sourceSymbols(model)) {
-      suggestions.push({ label, kind: label.startsWith('p_') ? monaco.languages.CompletionItemKind.Property : monaco.languages.CompletionItemKind.Variable, insertText: label, detail: label.startsWith('p_') ? 'ユーザーパラメーター' : 'ローカル式', range, sortText: `1-${label}` });
-    }
-    return { suggestions };
+  }
+  return { suggestions };
+}
+
+monaco.languages.registerCompletionItemProvider('synth-dsl', {
+  triggerCharacters: ['.', '_', '('],
+  provideCompletionItems(model, position) {
+    return hierarchicalCompletions(model, position);
   },
 });
 
@@ -133,10 +326,14 @@ monaco.languages.registerHoverProvider('synth-dsl', {
   provideHover(model, position) {
     const word = model.getWordAtPosition(position)?.word;
     if (!word) return null;
-    if (FUNCTION_DOCS[word]) return { contents: [{ value: `\`${FUNCTION_DOCS[word][0]}\`` }, { value: FUNCTION_DOCS[word][1] }] };
+    const line = model.getLineContent(position.lineNumber);
+    const left = line.slice(0, position.column - 1).match(/[A-Za-z_][\w.]*$/)?.[0] || '';
+    const right = line.slice(position.column - 1).match(/^[A-Za-z0-9_.]*/)?.[0] || '';
+    const qualified = (left + right) || word;
+    if (FUNCTION_DOCS[qualified]) return { contents: [{ value: `\`${FUNCTION_DOCS[qualified][0]}\`` }, { value: FUNCTION_DOCS[qualified][1] }] };
     if (INPUT_DOCS[word]) return { contents: [{ value: `**${word}** — 実行時入力` }, { value: INPUT_DOCS[word] }] };
     if (OUTPUT_DOCS[word]) return { contents: [{ value: `**${word}** — output` }, { value: OUTPUT_DOCS[word] }] };
-    if (word.startsWith('p_')) return { contents: [{ value: `**${word}** — ホストオートメーション対応パラメーター` }, { value: 'Play modeのコントロールを右クリックして、ノブ・スライダー・トグルを選択できます。' }] };
+    if (qualified.startsWith('p.')) return { contents: [{ value: `**${qualified}** — ホストオートメーション対応パラメーター` }, { value: 'Play modeのコントロールを右クリックして表示形式と配置を変更できます。' }] };
     return null;
   },
 });
@@ -145,8 +342,8 @@ monaco.languages.registerSignatureHelpProvider('synth-dsl', {
   signatureHelpTriggerCharacters: ['(', ','], signatureHelpRetriggerCharacters: [','],
   provideSignatureHelp(model, position) {
     const prefix = model.getValueInRange(new monaco.Range(position.lineNumber, 1, position.lineNumber, position.column));
-    const name = prefix.match(/([A-Za-z_]\w*)\s*\([^()]*$/)?.[1];
-    const entry = name === 'param' ? ['param(default, min, max, step?)', 'Declare a p_* VST parameter.'] : FUNCTION_DOCS[name];
+    const name = prefix.match(/([A-Za-z_][\w.]*)\s*\([^()]*$/)?.[1];
+    const entry = name === 'param' ? ['param(default, min, max, step, cc_link?)', 'p.nameとして先頭に宣言するVST parameter。'] : FUNCTION_DOCS[name];
     if (!entry) return null;
     const activeParameter = (prefix.slice(prefix.lastIndexOf('(') + 1).match(/,/g) || []).length;
     const labels = entry[0].slice(entry[0].indexOf('(') + 1, -1).split(', ').filter(Boolean);
@@ -197,11 +394,106 @@ let interacting = false;
 let copiedParameter = null;
 let toastTimer = 0;
 let pendingPresetLoad = null;
+const CUSTOM_PRESET_STORAGE_KEY = 'code-synthesizer.custom-presets.v1';
+let factoryPresets = [];
+let customPresets = loadCustomPresetLibrary();
+let deletePresetArmed = '';
+let deletePresetTimer = 0;
 
 function send(message) { window.ipc?.postMessage?.(JSON.stringify(message)); }
 function showToast(message) {
   const toast = $('#toast'); toast.textContent = message; toast.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.hidden = true; }, 1800);
+}
+function loadCustomPresetLibrary() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOM_PRESET_STORAGE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(item => item && typeof item.name === 'string' && typeof item.source === 'string')
+      .slice(0, 100)
+      .map(item => ({
+        name: item.name.slice(0, 60),
+        source: item.source,
+        parameterValues: Array.isArray(item.parameterValues) ? item.parameterValues : [],
+        controls: Array.isArray(item.controls) ? item.controls : [],
+      }));
+  } catch (_error) {
+    return [];
+  }
+}
+function persistCustomPresetLibrary() {
+  try {
+    localStorage.setItem(CUSTOM_PRESET_STORAGE_KEY, JSON.stringify(customPresets));
+    return true;
+  } catch (_error) {
+    showToast('Custom presetを保存できませんでした');
+    return false;
+  }
+}
+function presetOptionValue(kind, name = '') { return `${kind}:${name}`; }
+function parsePresetOption(value) {
+  const separator = value.indexOf(':');
+  return {
+    kind: separator < 0 ? 'factory' : value.slice(0, separator),
+    name: separator < 0 ? value : value.slice(separator + 1),
+  };
+}
+function rebuildPresetOptions(presets = factoryPresets) {
+  factoryPresets = Array.isArray(presets) ? presets : [];
+  const fragment = document.createDocumentFragment();
+  const categories = new Map();
+  for (const preset of factoryPresets) {
+    const category = preset.category || 'Factory';
+    if (!categories.has(category)) categories.set(category, []);
+    categories.get(category).push(preset);
+  }
+  for (const [category, presetsInCategory] of categories) {
+    const group = document.createElement('optgroup');
+    group.label = category;
+    for (const preset of presetsInCategory) {
+      group.append(Object.assign(document.createElement('option'), {
+        value: presetOptionValue('factory', preset.name),
+        textContent: preset.name,
+      }));
+    }
+    fragment.append(group);
+  }
+  const customGroup = document.createElement('optgroup');
+  customGroup.label = 'Custom';
+  customGroup.append(Object.assign(document.createElement('option'), {
+    value: presetOptionValue('unsaved'),
+    textContent: 'Unsaved Code',
+  }));
+  for (const preset of customPresets) {
+    customGroup.append(Object.assign(document.createElement('option'), {
+      value: presetOptionValue('custom', preset.name),
+      textContent: preset.name,
+    }));
+  }
+  fragment.append(customGroup);
+  presetSelect.replaceChildren(fragment);
+}
+function selectionForState(state) {
+  if (state.selectedPreset && state.selectedPreset !== 'Custom') {
+    return presetOptionValue('factory', state.selectedPreset);
+  }
+  const saved = customPresets.find(preset => preset.source === state.source);
+  return saved ? presetOptionValue('custom', saved.name) : presetOptionValue('unsaved');
+}
+function syncPresetSelection(state) {
+  const value = selectionForState(state);
+  if ([...presetSelect.options].some(option => option.value === value)) presetSelect.value = value;
+  const selected = parsePresetOption(presetSelect.value);
+  const custom = selected.kind === 'custom';
+  if (custom && document.activeElement !== $('#custom-preset-name')) {
+    $('#custom-preset-name').value = selected.name;
+  }
+  $('#delete-custom-preset').disabled = !custom;
+  if (!custom) {
+    deletePresetArmed = '';
+    $('#delete-custom-preset').textContent = 'Delete';
+  }
 }
 function compileNow(preview = false) {
   clearTimeout(compileTimer); statusElement.className = 'compile-status pending'; statusElement.textContent = 'Compiling…';
@@ -211,7 +503,7 @@ function compileNow(preview = false) {
 editor.onDidChangeModelContent(event => {
   if (!initialized || applyingRemote) return;
   editorDirty = true;
-  if (editor.hasTextFocus() && event.changes.some(change => change.text.length === 1 && /[A-Za-z_]/.test(change.text))) {
+  if (editor.hasTextFocus() && event.changes.some(change => change.text.length === 1 && /[A-Za-z_.]/.test(change.text))) {
     clearTimeout(suggestTimer);
     suggestTimer = setTimeout(() => editor.trigger('keyboard', 'editor.action.triggerSuggest', {}), 0);
   }
@@ -279,12 +571,12 @@ async function pollState() {
     if (interacting && latestState?.controls) state.controls = latestState.controls;
     latestState = state;
     if (!initialized) {
-      presetSelect.replaceChildren(...[...state.presets, 'Custom'].map(name => Object.assign(document.createElement('option'), { value: name, textContent: name })));
+      rebuildPresetOptions(state.presets);
       setEditorSource(state.source, true); setMode(state.mode || 'editor', false); initialized = true;
     } else if (state.selectedPreset !== 'Custom' && editor.getValue() !== state.source) {
       setEditorSource(state.source, true);
     }
-    presetSelect.value = state.selectedPreset; renderStatus(state.status);
+    syncPresetSelection(state); renderStatus(state.status);
     $('#sample-rate-badge').textContent = `${Math.round(state.sampleRate || 48000).toLocaleString()} Hz`;
     $('#voice-badge').textContent = `${state.activeVoices} voice${state.activeVoices === 1 ? '' : 's'}`;
     $('#scope-note').textContent = midiName(state.previewNote);
@@ -297,40 +589,121 @@ async function pollState() {
   }
 }
 
-function performPresetLoad(name, switchToEditor = false) {
+function presetRequest(value) {
+  const parsed = parsePresetOption(value);
+  if (parsed.kind === 'factory') {
+    return factoryPresets.some(preset => preset.name === parsed.name)
+      ? { kind: 'factory', name: parsed.name, label: parsed.name }
+      : null;
+  }
+  if (parsed.kind === 'custom') {
+    const preset = customPresets.find(candidate => candidate.name === parsed.name);
+    return preset ? { kind: 'custom', name: preset.name, label: preset.name, source: preset.source, parameterValues: preset.parameterValues, controls: preset.controls } : null;
+  }
+  return null;
+}
+function performPresetLoad(request, switchToEditor = false) {
+  if (!request) return;
   editorDirty = false; initialLayoutChecked = false; initialRepairJustApplied = false;
   layoutFingerprint = ''; pendingLayoutFingerprint = null; pendingLayoutControls = null;
-  send({ cmd: 'loadPreset', name });
+  if (request.kind === 'custom') {
+    setEditorSource(request.source, true);
+    send({ cmd: 'loadCustomPreset', source: request.source, parameterValues: request.parameterValues || [], controls: request.controls || [] });
+  } else {
+    send({ cmd: 'loadPreset', name: request.name });
+  }
+  $('#custom-preset-name').value = request.kind === 'custom' ? request.name : '';
   if (switchToEditor) setMode('editor');
 }
 function closePresetConfirm() {
   const modal = $('#preset-confirm');
   modal.hidden = true; modal.setAttribute('aria-hidden', 'true'); pendingPresetLoad = null;
-  presetSelect.value = latestState?.selectedPreset || 'Custom';
+  if (latestState) syncPresetSelection(latestState);
 }
-function openPresetConfirm(name, switchToEditor) {
-  pendingPresetLoad = { name, switchToEditor };
-  $('#preset-confirm-name').textContent = name;
+function openPresetConfirm(request, switchToEditor) {
+  pendingPresetLoad = { request, switchToEditor };
+  $('#preset-confirm-name').textContent = request.label;
   const modal = $('#preset-confirm');
   modal.hidden = false; modal.setAttribute('aria-hidden', 'false');
-  presetSelect.value = latestState?.selectedPreset || 'Custom';
+  if (latestState) syncPresetSelection(latestState);
   setTimeout(() => $('#confirm-preset-load').focus(), 0);
 }
-function loadPreset(name, switchToEditor = false) {
-  if (name === 'Custom') return;
-  if (editorDirty) { openPresetConfirm(name, switchToEditor); return; }
-  performPresetLoad(name, switchToEditor);
+function loadPreset(value, switchToEditor = false) {
+  const normalized = value.includes(':') ? value : presetOptionValue('factory', value);
+  const request = presetRequest(normalized);
+  if (!request) {
+    if (latestState) syncPresetSelection(latestState);
+    return;
+  }
+  if (editorDirty) { openPresetConfirm(request, switchToEditor); return; }
+  performPresetLoad(request, switchToEditor);
 }
-presetSelect.addEventListener('change', () => loadPreset(presetSelect.value));
+presetSelect.addEventListener('change', () => {
+  const selected = parsePresetOption(presetSelect.value);
+  if (selected.kind === 'custom') $('#custom-preset-name').value = selected.name;
+  loadPreset(presetSelect.value);
+});
 $('#load-preset').addEventListener('click', () => loadPreset(presetSelect.value));
 $('#cancel-preset-load').addEventListener('click', closePresetConfirm);
 $('#confirm-preset-load').addEventListener('click', () => {
   const request = pendingPresetLoad;
   closePresetConfirm();
-  if (request) performPresetLoad(request.name, request.switchToEditor);
+  if (request) performPresetLoad(request.request, request.switchToEditor);
 });
 $('#preset-confirm').addEventListener('pointerdown', event => {
   if (event.target.id === 'preset-confirm') closePresetConfirm();
+});
+
+$('#save-custom-preset').addEventListener('click', () => {
+  const name = $('#custom-preset-name').value.trim();
+  if (!name) {
+    showToast('Preset名を入力してください');
+    $('#custom-preset-name').focus();
+    return;
+  }
+  const source = editor.getValue();
+  const parameterValues = (latestState?.parameters || []).map(parameter => ({
+    name: parameter.name,
+    normalized: parameter.normalized,
+  }));
+  const controls = (latestState?.controls || []).map(control => ({ ...control }));
+  const existing = customPresets.find(preset => preset.name === name);
+  if (existing) Object.assign(existing, { source, parameterValues, controls });
+  else customPresets.push({ name, source, parameterValues, controls });
+  customPresets.sort((left, right) => left.name.localeCompare(right.name, 'ja'));
+  if (!persistCustomPresetLibrary()) return;
+  rebuildPresetOptions();
+  presetSelect.value = presetOptionValue('custom', name);
+  $('#delete-custom-preset').disabled = false;
+  compileNow(false);
+  editorDirty = false;
+  showToast(existing ? 'Custom presetを更新しました' : 'Custom presetを保存しました');
+});
+
+$('#delete-custom-preset').addEventListener('click', () => {
+  const selected = parsePresetOption(presetSelect.value);
+  if (selected.kind !== 'custom') return;
+  const button = $('#delete-custom-preset');
+  if (deletePresetArmed !== selected.name) {
+    deletePresetArmed = selected.name;
+    button.textContent = 'Confirm delete';
+    clearTimeout(deletePresetTimer);
+    deletePresetTimer = setTimeout(() => {
+      deletePresetArmed = '';
+      button.textContent = 'Delete';
+    }, 3000);
+    return;
+  }
+  customPresets = customPresets.filter(preset => preset.name !== selected.name);
+  if (!persistCustomPresetLibrary()) return;
+  clearTimeout(deletePresetTimer);
+  deletePresetArmed = '';
+  rebuildPresetOptions();
+  presetSelect.value = presetOptionValue('unsaved');
+  $('#custom-preset-name').value = '';
+  button.textContent = 'Delete';
+  button.disabled = true;
+  showToast('Custom presetを削除しました');
 });
 
 function decimalsFor(step) { if (!step) return 3; if (step >= 1) return 0; return Math.min(4, Math.max(1, Math.ceil(-Math.log10(step)))); }
@@ -490,7 +863,7 @@ function toggleArrange(force) {
   stage.classList.toggle('arranging', arranging); $('#arrange-button').classList.toggle('active', arranging);
   $('#arrange-hint').textContent = arranging
     ? 'Layout mode: ドラッグで移動、右下のハンドルでサイズ変更、プロジェクトに保存'
-    : 'Guide: p_name = param(default, min, max, step) · 右クリックでVST操作';
+    : 'Guide: p.name = param(default, min, max, step, cc_link?) · 右クリックでVST操作';
 }
 $('#arrange-button').addEventListener('click', () => toggleArrange());
 $('#reset-parameters').addEventListener('click', () => {

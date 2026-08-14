@@ -1,0 +1,28 @@
+# NOISE PERCUSSION — modal resonatorとnoise exciterで作るPercussion
+p.gain = param(0.72, 0, 1.5, 0.01)
+p.body_decay_s = param(0.28, 0.02, 3, 0.01)
+p.noise_decay_s = param(0.11, 0.01, 2, 0.01)
+p.release_s = param(0.18, 0.01, 2, 0.01)
+p.tune_semitone = param(-12, -36, 24, 1)
+p.pitch_drop_oct = param(2.2, 0, 5, 0.01)
+p.pitch_decay_s = param(0.035, 0.005, 0.5, 0.001)
+p.body_mix = param(0.78, 0, 1, 0.01)
+p.noise_mix = param(0.32, 0, 1, 0.01, 74)
+p.metal_mix = param(0.18, 0, 1, 0.01)
+p.drive = param(1.6, 0.5, 8, 0.01)
+p.pan = param(0, -1, 1, 0.01)
+
+fn note(in, p) -> out {
+    release = exp(-10 * in.l / p.release_s)
+    pitch_env = exp(-8 * in.t / p.pitch_decay_s)
+    freq = in.freq * semitone_ratio(p.tune_semitone) * exp2(p.pitch_drop_oct * pitch_env)
+    excite = exciter.impulse(in.t, 2ms)
+    body = resonator(excite, freq, p.body_decay_s)
+    metal = modal(excite, freq * 3.17, p.noise_decay_s, 0.7)
+        + modal(excite, freq * 4.63, p.noise_decay_s * 0.7, 0.45)
+    noise_layer = exciter.noise(in.t, p.noise_decay_s)
+    tone = drive(p.body_mix * body + p.metal_mix * metal + p.noise_mix * noise_layer, p.drive)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * release * tone
+    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.l_limit = p.release_s
+}

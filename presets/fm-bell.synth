@@ -1,10 +1,14 @@
-p_index = param(5, 0, 12, 0.01)
-p_mod_decay_s = param(0.36, 0.03, 2, 0.01)
-p_release_s = param(1.2, 0.1, 6, 0.01)
-carrier = TAU * freq * t
-# 時間パラメーターの単位は秒です。値を大きくすると、よりゆっくり減衰します。
-modulator = p_index * exp(-t / p_mod_decay_s) * sin(TAU * freq * 2.01 * t)
-env = exp(-1.7*t) * exp(-9.6*l / p_release_s)
-wave = s * env * sin(carrier + modulator)
-pan = midi_pan
-l_limit = p_release_s
+p.index = param(5, 0, 12, 0.01)
+p.mod_decay_s = param(0.36, 0.03, 2, 0.01)
+p.release_s = param(1.2, 0.1, 6, 0.01)
+
+fn note(in, p) -> out {
+    carrier = TAU * in.freq * in.t
+    # 時間パラメーターを大きくすると、よりゆっくり減衰します。
+    modulator = p.index * exp(-in.t / p.mod_decay_s)
+        * sin(TAU * in.freq * 2.01 * in.t)
+    env = exp(-1.7 * in.t) * exp(-9.6 * in.l / p.release_s)
+    out.wave = in.s * in.vol * in.mexpr * env * sin(carrier + modulator)
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

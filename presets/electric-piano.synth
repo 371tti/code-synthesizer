@@ -1,0 +1,28 @@
+# ELECTRIC PIANO — FM tineとStandard tremoloを持つEP
+p.gain = param(0.72, 0, 1.5, 0.01)
+p.decay_s = param(1.8, 0.1, 8, 0.01)
+p.sustain = param(0.24, 0, 0.9, 0.01)
+p.release_s = param(1.4, 0.05, 8, 0.01)
+p.fm_ratio = param(3, 0.5, 8, 0.01)
+p.fm_index = param(1.65, 0, 8, 0.01)
+p.tine_decay_s = param(0.42, 0.03, 3, 0.01)
+p.tine_mix = param(0.68, 0, 1, 0.01, 74)
+p.body_mix = param(0.35, 0, 1, 0.01)
+p.tremolo_hz = param(4.7, 0.1, 10, 0.1)
+p.tremolo_depth = param(0.18, 0, 1, 0.01)
+p.velocity_tone = param(0.7, 0, 1, 0.01)
+p.pan = param(0, -1, 1, 0.01)
+
+fn note(in, p) -> out {
+    decay = p.sustain + (1 - p.sustain) * exp(-4 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    tine_env = exp(-7 * in.t / p.tine_decay_s)
+    index = p.fm_index * mix(0.35, 1, p.velocity_tone * in.s) * tine_env
+    tine = sin(TAU * in.freq * in.t + index * sin(TAU * in.freq * p.fm_ratio * in.t))
+    body = sin(TAU * in.freq * in.t) + 0.22 * sin(TAU * in.freq * 2 * in.t)
+    raw = p.tine_mix * tine + p.body_mix * body
+    tone = tremolo(filter.onepole.lp(raw, 7200, in.sr), p.tremolo_hz, p.tremolo_depth)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * decay * release * tone
+    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.l_limit = p.release_s
+}

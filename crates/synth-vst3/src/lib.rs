@@ -453,7 +453,8 @@ impl IEditControllerTrait for SynthPlugin {
             if let Some(spec) = self.ui.user_parameter_spec(parameter_index) {
                 let title = spec
                     .name
-                    .strip_prefix("p_")
+                    .strip_prefix("p.")
+                    .or_else(|| spec.name.strip_prefix("p_"))
                     .unwrap_or(&spec.name)
                     .replace('_', " ");
                 copy_wstring(&title, &mut info.title);

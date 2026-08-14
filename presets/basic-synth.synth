@@ -1,0 +1,45 @@
+# BASIC SYNTH — 波形を自由に混ぜて作る汎用シンセ
+p.gain = param(0.62, 0, 1.5, 0.01)
+p.attack_s = param(0.012, 0.001, 3, 0.001)
+p.decay_s = param(0.45, 0.02, 6, 0.01)
+p.sustain = param(0.72, 0, 1, 0.01)
+p.release_s = param(0.7, 0.03, 8, 0.01)
+p.octave = param(0, -2, 2, 1)
+p.sine_mix = param(0, 0, 1, 0.01)
+p.saw_mix = param(0.75, 0, 1, 0.01)
+p.square_mix = param(0.25, 0, 1, 0.01)
+p.triangle_mix = param(0, 0, 1, 0.01)
+p.sub_mix = param(0.12, 0, 1, 0.01)
+p.noise_mix = param(0, 0, 0.5, 0.01)
+p.pulse_width = param(0.5, 0.05, 0.95, 0.01)
+p.brightness = param(0.8, 0, 1, 0.01, 74)
+p.drive = param(1.1, 0.5, 5, 0.01)
+p.vibrato_hz = param(5.2, 0.1, 12, 0.1)
+p.vibrato_cent = param(0, 0, 80, 0.1)
+p.pan = param(0, -1, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    decay = p.sustain + (1 - p.sustain) * exp(-5 * in.t / p.decay_s)
+    release = exp(-8 * in.l / p.release_s)
+    vibrato = p.vibrato_cent * (0.2 + 0.8 * in.mw) * sin(TAU * p.vibrato_hz * in.t)
+    freq = in.freq * semitone_ratio(p.octave * 12) * cent_ratio(vibrato)
+
+    sine_layer = p.sine_mix * sin(TAU * freq * in.t)
+    saw_layer = p.saw_mix * saw(freq, in.t)
+    square_layer = p.square_mix * pulse(freq, in.t, p.pulse_width)
+    triangle_layer = p.triangle_mix * triangle(freq, in.t)
+    sub_layer = p.sub_mix * sin(TAU * freq * 0.5 * in.t)
+    noise_layer = p.noise_mix * noise()
+    total = max(p.sine_mix + p.saw_mix + p.square_mix
+        + p.triangle_mix + p.sub_mix + p.noise_mix, 1)
+    raw = (sine_layer + saw_layer + square_layer + triangle_layer
+        + sub_layer + noise_layer) / total
+    mellow = 0.72 * sin(TAU * freq * in.t) + 0.28 * triangle(freq, in.t)
+    tone = mix(mellow, raw, p.brightness)
+
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * decay * release
+        * tanh(p.drive * tone)
+    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.l_limit = p.release_s
+}

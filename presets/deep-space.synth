@@ -1,0 +1,30 @@
+# DEEP SPACE — sample_hold textureとFDN reverbによるDrone Pad
+p.gain = param(0.34, 0, 1.5, 0.01)
+p.attack_s = param(1.8, 0.02, 12, 0.01)
+p.release_s = param(7.5, 0.2, 20, 0.1)
+p.motion_hz = param(0.12, 0.01, 2, 0.01)
+p.texture = param(0.26, 0, 1, 0.01)
+p.cutoff_hz = param(1800, 80, 12000, 1, 74)
+p.space = param(0.82, 0, 1, 0.01)
+p.width = param(1.35, 0, 1.6, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-6 * in.l / p.release_s)
+    motion = sample_hold(hash2(in.voice, floor(in.t * 7)), p.motion_hz * 8)
+    raw = sin(TAU * in.freq * in.t + p.texture * motion)
+        + 0.5 * sin(TAU * in.freq * 0.501 * in.t)
+        + p.texture * 0.2 * noise()
+    tone = filter.svf.lp(raw, p.cutoff_hz * (0.7 + 0.3 * motion), 0.65, in.sr)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
+    out.pan = clamp(in.midi_pan + 0.55 * sin(in.voice * 2.1), -1, 1)
+    out.l_limit = p.release_s
+}
+
+fn filter(in, p) -> out {
+    left = reverb.fdn(in.wave_l, p.space, 0.88, 0.5)
+    right = reverb.fdn(in.wave_r, p.space, 0.88, 0.5)
+    wide = stereo.width(left, right, p.width)
+    out.wave_l = wide.left
+    out.wave_r = wide.right
+}

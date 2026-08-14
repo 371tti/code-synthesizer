@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Code Synthesizer ver 0.1.2</title>
+    <title>Code Synthesizer ver 0.2.0</title>
     <link rel="icon" href="data:," />
-    <script type="module" crossorigin src="./assets/index-B0tR-jQH.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-HcYSj2R3.css">
+    <script type="module" crossorigin src="./assets/index-B4ZDv3Tw.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CVAP1eLP.css">
   </head>
   <body>
-    <div id="boot-status" role="status">Code Synthesizer ver 0.1.2 を読み込み中…</div>
+    <div id="boot-status" role="status">Code Synthesizer ver 0.2.0 を読み込み中…</div>
     <div id="app" data-mode="editor">
       <header class="app-head">
         <div class="identity">
-          <h1>Code Synthesizer ver 0.1.2</h1>
+          <h1>Code Synthesizer ver 0.2.0</h1>
           <div class="engine-badges">
             <span id="sample-rate-badge">-- Hz</span><i>·</i>
             <span id="voice-badge">0 voices</span><i>·</i>
@@ -53,7 +53,7 @@
           <div class="section-head">
             <div>
               <h2>Performance</h2>
-              <span class="hint">p_* user parameters</span>
+              <span class="hint">p.* user parameters</span>
             </div>
             <div class="tool-row">
               <button id="parameter-guide-button" class="text-button">Guide</button>
@@ -64,12 +64,12 @@
           <div id="control-stage" class="control-stage">
             <div id="empty-controls" class="empty-controls">
               <strong>No performance controls</strong>
-              <span>Editor mode で p_* を宣言してください:</span>
-              <code>p_tone = param(0.5, 0, 1, 0.01)</code>
+              <span>Editor mode の先頭で p.* を宣言してください:</span>
+              <code>p.tone = param(0.5, 0, 1, 0.01)</code>
             </div>
           </div>
           <div class="play-foot">
-            <span id="arrange-hint">Guide: p_name = param(default, min, max, step)</span>
+            <span id="arrange-hint">Guide: p.name = param(default, min, max, step, cc_link?)</span>
             <span id="parameter-count">0 parameters</span>
           </div>
         </section>
@@ -86,19 +86,24 @@
             </div>
           </section>
           <section class="panel preset-card">
-            <div class="section-head"><h2>Preset</h2><span class="hint">Factory</span></div>
+            <div class="section-head"><h2>Preset</h2><span class="hint">Factory / Custom</span></div>
             <div class="preset-row">
               <label>Program<select id="preset"></select></label>
               <button id="load-preset" class="text-button">Load</button>
+            </div>
+            <div class="preset-custom-row">
+              <label>Name<input id="custom-preset-name" type="text" maxlength="60" placeholder="My Preset" /></label>
+              <button id="save-custom-preset" class="text-button primary" type="button">Save</button>
+              <button id="delete-custom-preset" class="text-button" type="button" disabled>Delete</button>
             </div>
           </section>
           <details class="panel reference-card">
             <summary>DSL reference</summary>
             <div class="reference-copy">
-              <p><b>Inputs</b> <code>t l s freq note ch bend mw vol pressure sr tempo beat ppq rand cc(n)</code></p>
-              <p><b>Outputs</b> <code>wave pan l_limit</code></p>
-              <p><b>Oscillators</b> <code>saw(freq,t) square(freq,t,duty) triangle(freq,t) noise()</code></p>
-              <p><b>Control</b> <code>p_name = param(default, min, max, step)</code> · Play → Guide for layout and automation details.</p>
+              <p><b>Inputs</b> <code>in.t in.l in.s in.freq in.note in.ch in.mw in.vol in.pressure in.sr in.cc(n)</code></p>
+              <p><b>Entry</b> <code>fn note(in, p) -&gt; out</code> · optional <code>fn filter(in, p) -&gt; out</code></p>
+              <p><b>Oscillators</b> <code>saw(freq,t) square(freq,t) pulse(freq,t,duty) triangle(freq,t) noise()</code></p>
+              <p><b>Control</b> <code>p.name = param(default, min, max, step, cc_link?)</code> · Play → Guide for details.</p>
             </div>
           </details>
         </aside>
@@ -147,12 +152,12 @@
         <div class="guide-copy">
           <section>
             <h3>Declaration</h3>
-            <code>p_name = param(default, minimum, maximum, step)</code>
-            <p><code>p_</code> は必須です。値は式にそのまま渡されます。<code>step</code> は省略でき、<code>0</code> なら連続値です。使う式より前に宣言してください。</p>
+            <code>p.name = param(default, minimum, maximum, step, cc_link?)</code>
+            <p><code>p.</code> は必須です。先頭から最初の <code>fn</code> までに宣言します。最初の4値は必須で、MIDI CC番号だけ省略できます。</p>
           </section>
           <section>
             <h3>Meaningful ranges</h3>
-            <p>演奏者が期待する変化と、名前・式の意味を揃えます。たとえば秒単位の <code>p_release_s</code> を使い、<code>exp(-8 * l / p_release_s)</code> と書けば、値を大きくするほどリリースが長くなります。</p>
+            <p>たとえば秒単位の <code>p.release_s</code> を使い、<code>exp(-8 * in.l / p.release_s)</code> と書けば、値を大きくするほどリリースが長くなります。</p>
           </section>
           <section>
             <h3>Placement</h3>
@@ -180,12 +185,12 @@
         <div class="guide-copy">
           <section>
             <h3>Write an expression</h3>
-            <p>音声の式を1行ずつ記述します。左側に名前、右側に式を書き、必ず <code>wave</code> と <code>l_limit</code> へ出力してください。</p>
-            <code>wave = s * sin(TAU * freq * t)<br />l_limit = 1.0</code>
+            <p><code>fn note(in, p) -&gt; out</code> にVoiceごとの音声を記述します。monoでは <code>out.wave</code> と <code>out.l_limit</code> が必須です。</p>
+            <code>out.wave = in.s * sin(TAU * in.freq * in.t)<br />out.l_limit = 1s</code>
           </section>
           <section>
             <h3>Inputs and outputs</h3>
-            <p><code>t</code>、<code>l</code>、<code>freq</code>、<code>s</code> などの入力は補完とHoverで確認できます。<code>wave</code> と <code>l_limit</code> は必須、<code>pan</code> は任意の出力です。<code>l_limit</code> はノートを離してからボイスを終了する秒数です。</p>
+            <p><code>in.t</code>、<code>in.l</code>、<code>in.freq</code>、<code>in.s</code> などは補完とHoverで確認できます。true stereoでは <code>out.wave_l/out.wave_r</code> を使います。</p>
           </section>
           <section>
             <h3>Compile and preview</h3>
@@ -193,7 +198,7 @@
           </section>
           <section>
             <h3>Parameters</h3>
-            <p>Play modeの操作子を作るには、式より前に <code>p_name = param(default, min, max, step)</code> を宣言します。配置やVSTオートメーションはPlay modeのGuideで確認できます。</p>
+            <p>Play modeの操作子はファイル先頭へ <code>p.name = param(default, min, max, step, cc_link?)</code> と宣言します。</p>
           </section>
         </div>
       </article>

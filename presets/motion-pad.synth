@@ -1,17 +1,19 @@
-# Motion Pad — ホストのテンポと拍で緩やかなレイヤーを動かし、ノート自体は安定させます。
-# MWで動きを増やし、CC74で空気感を加えます。
-p_attack_s = param(0.8, 0.03, 6, 0.01)
-p_release_s = param(4.5, 0.3, 14, 0.01)
-p_motion = param(0.35, 0, 1, 0.01)
-p_spread = param(0.4, 0, 1, 0.01)
-
-attack = min(t / p_attack_s, 1)
-release = exp(-7 * l / p_release_s)
-motion = p_motion * (0.25 + 0.75 * mw) * sin(TAU * beat / 4 + voice * 0.7)
-air = 0.06 + 0.24 * cc(74)
-left_osc = sin(TAU * freq * 0.997 * t + motion)
-right_osc = sin(TAU * freq * 1.003 * t - motion)
-air_osc = air * sin(TAU * freq * 2 * t + motion * 1.7)
-wave = 0.42 * s * attack * release * (left_osc + right_osc + air_osc)
-pan = midi_pan + p_spread * sin(voice * 1.9)
-l_limit = p_release_s
+# Motion Pad — ホストのtempo/beatとMIDI表現に反応します。
+p.attack_s = param(0.8, 0.03, 6, 0.01)
+p.release_s = param(4.5, 0.3, 14, 0.01)
+p.motion = param(0.35, 0, 1, 0.01)
+p.spread = param(0.4, 0, 1, 0.01)
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-7 * in.l / p.release_s)
+    motion = p.motion * (0.25 + 0.75 * in.mw)
+        * sin(TAU * in.beat / 4 + in.voice * 0.7)
+    air = 0.06 + 0.24 * in.cc(74)
+    left_osc = sin(TAU * in.freq * 0.997 * in.t + motion)
+    right_osc = sin(TAU * in.freq * 1.003 * in.t - motion)
+    air_osc = air * sin(TAU * in.freq * 2 * in.t + motion * 1.7)
+    out.wave = 0.42 * in.s * in.vol * in.mexpr * attack * release
+        * (left_osc + right_osc + air_osc)
+    out.pan = in.midi_pan + p.spread * sin(in.voice * 1.9)
+    out.l_limit = p.release_s
+}

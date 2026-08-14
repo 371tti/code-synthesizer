@@ -14,64 +14,186 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use synth_core::{MidiEvent, MidiNote, ProgramExchange, UserParameterStore, WaveformMonitor};
-use synth_dsl::{CompileError, Compiler, Inputs, ParameterSpec, Program};
+use synth_dsl::{
+    CompileError, Compiler, Inputs, NoteOutputMode, ParameterSpec, Program, ProgramInstance,
+};
 
 pub const DEFAULT_SOURCE: &str = include_str!("../../../presets/pure-sine.synth");
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Preset {
     pub name: &'static str,
+    pub category: &'static str,
     pub source: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresetSummary {
+    pub name: &'static str,
+    pub category: &'static str,
 }
 
 pub const PRESETS: &[Preset] = &[
     Preset {
         name: "Pure Sine",
+        category: "Basic",
         source: DEFAULT_SOURCE,
     },
     Preset {
-        name: "Parameter Guide",
-        source: include_str!("../../../presets/parameter-guide.synth"),
+        name: "Basic Synth",
+        category: "Basic",
+        source: include_str!("../../../presets/basic-synth.synth"),
+    },
+    Preset {
+        name: "SuperSaw",
+        category: "Basic",
+        source: include_str!("../../../presets/supersaw.synth"),
+    },
+    Preset {
+        name: "Analog Lead",
+        category: "Lead",
+        source: include_str!("../../../presets/analog-lead.synth"),
+    },
+    Preset {
+        name: "Chip Lead",
+        category: "Lead",
+        source: include_str!("../../../presets/chip-lead.synth"),
+    },
+    Preset {
+        name: "MPE Lead",
+        category: "Lead",
+        source: include_str!("../../../presets/mpe-lead.synth"),
+    },
+    Preset {
+        name: "Wavefold Lead",
+        category: "Lead",
+        source: include_str!("../../../presets/wavefold-lead.synth"),
+    },
+    Preset {
+        name: "Phase Motion",
+        category: "Lead",
+        source: include_str!("../../../presets/phase-motion.synth"),
+    },
+    Preset {
+        name: "Poly Pluck",
+        category: "Pluck",
+        source: include_str!("../../../presets/poly-pluck.synth"),
+    },
+    Preset {
+        name: "CC74 Pluck",
+        category: "Pluck",
+        source: include_str!("../../../presets/cc74-pluck.synth"),
+    },
+    Preset {
+        name: "Glass Pluck",
+        category: "Pluck",
+        source: include_str!("../../../presets/glass-pluck.synth"),
+    },
+    Preset {
+        name: "Acid Bass",
+        category: "Bass",
+        source: include_str!("../../../presets/acid-bass.synth"),
+    },
+    Preset {
+        name: "Reese Bass",
+        category: "Bass",
+        source: include_str!("../../../presets/reese-bass.synth"),
+    },
+    Preset {
+        name: "MIDI Bass",
+        category: "Bass",
+        source: include_str!("../../../presets/midi-bass.synth"),
+    },
+    Preset {
+        name: "Electric Piano",
+        category: "Keys",
+        source: include_str!("../../../presets/electric-piano.synth"),
     },
     Preset {
         name: "FM Bell",
+        category: "Keys",
         source: include_str!("../../../presets/fm-bell.synth"),
     },
     Preset {
         name: "Warm Organ",
+        category: "Keys",
         source: include_str!("../../../presets/warm-organ.synth"),
     },
     Preset {
-        name: "Soft Pad",
-        source: include_str!("../../../presets/soft-pad.synth"),
-    },
-    Preset {
-        name: "MIDI Reactive",
-        source: include_str!("../../../presets/midi-reactive.synth"),
-    },
-    Preset {
         name: "Velocity Piano",
+        category: "Keys",
         source: include_str!("../../../presets/velocity-piano.synth"),
     },
     Preset {
-        name: "MPE Lead",
-        source: include_str!("../../../presets/mpe-lead.synth"),
+        name: "Resonant Bells",
+        category: "Keys",
+        source: include_str!("../../../presets/resonant-bells.synth"),
     },
     Preset {
-        name: "Expressive Strings",
-        source: include_str!("../../../presets/expressive-strings.synth"),
+        name: "Lo-Fi Keys",
+        category: "Keys",
+        source: include_str!("../../../presets/lofi-keys.synth"),
     },
     Preset {
-        name: "CC74 Pluck",
-        source: include_str!("../../../presets/cc74-pluck.synth"),
+        name: "Chorus Pad",
+        category: "Pad",
+        source: include_str!("../../../presets/chorus-pad.synth"),
     },
     Preset {
-        name: "MIDI Bass",
-        source: include_str!("../../../presets/midi-bass.synth"),
+        name: "Soft Pad",
+        category: "Pad",
+        source: include_str!("../../../presets/soft-pad.synth"),
+    },
+    Preset {
+        name: "Ambient Delay",
+        category: "Pad",
+        source: include_str!("../../../presets/ambient-delay.synth"),
     },
     Preset {
         name: "Motion Pad",
+        category: "Pad",
         source: include_str!("../../../presets/motion-pad.synth"),
+    },
+    Preset {
+        name: "Deep Space",
+        category: "Pad",
+        source: include_str!("../../../presets/deep-space.synth"),
+    },
+    Preset {
+        name: "Tape Echo",
+        category: "Pad",
+        source: include_str!("../../../presets/tape-echo.synth"),
+    },
+    Preset {
+        name: "Synth Brass",
+        category: "Ensemble",
+        source: include_str!("../../../presets/synth-brass.synth"),
+    },
+    Preset {
+        name: "Expressive Strings",
+        category: "Ensemble",
+        source: include_str!("../../../presets/expressive-strings.synth"),
+    },
+    Preset {
+        name: "Noise Percussion",
+        category: "Percussion",
+        source: include_str!("../../../presets/noise-percussion.synth"),
+    },
+    Preset {
+        name: "Metal Drum",
+        category: "Percussion",
+        source: include_str!("../../../presets/metal-drum.synth"),
+    },
+    Preset {
+        name: "MIDI Reactive",
+        category: "MIDI",
+        source: include_str!("../../../presets/midi-reactive.synth"),
+    },
+    Preset {
+        name: "Parameter Guide",
+        category: "Utility",
+        source: include_str!("../../../presets/parameter-guide.synth"),
     },
 ];
 
@@ -121,7 +243,7 @@ pub struct UiSnapshot {
     pub status: CompileStatus,
     pub preview_note: u8,
     pub preview_velocity: f32,
-    pub presets: Vec<&'static str>,
+    pub presets: Vec<PresetSummary>,
     pub sample_rate: f32,
     pub active_voices: usize,
     pub active_notes: Vec<UiMidiNote>,
@@ -136,6 +258,13 @@ pub struct UiSnapshot {
 pub struct UiMidiNote {
     pub note: u8,
     pub velocity: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomParameterValue {
+    name: String,
+    normalized: f32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,6 +316,9 @@ struct UiState {
     selected_preset: String,
     status: CompileStatus,
     program: Program,
+    preview_instance: ProgramInstance,
+    preview_key: (u8, u32, u32),
+    preview_sample_index: u64,
     preview_note: u8,
     preview_velocity: f32,
     controls: Vec<ControlLayout>,
@@ -294,6 +426,9 @@ impl UiModel {
         };
         let parameters = Arc::new(UserParameterStore::new(program.parameter_specs()));
         let controls = default_control_layout(program.parameter_specs());
+        let preview_instance = program
+            .instantiate(48_000.0, None)
+            .expect("default preview state must prepare");
         Arc::new(Self {
             state: Mutex::new(UiState {
                 active_source: source.clone(),
@@ -301,6 +436,9 @@ impl UiModel {
                 selected_preset: "Custom".into(),
                 status,
                 program,
+                preview_instance,
+                preview_key: (60, 0.9f32.to_bits(), 48_000.0f32.to_bits()),
+                preview_sample_index: 0,
                 preview_note: 60,
                 preview_velocity: 0.9,
                 controls,
@@ -377,6 +515,15 @@ impl UiModel {
                 );
                 reconcile_control_layout(&mut state.controls, program.parameter_specs());
                 self.exchange.publish(program.clone());
+                state.preview_instance = program
+                    .instantiate(self.waveform.sample_rate(), None)
+                    .expect("compiled preview state must prepare");
+                state.preview_key = (
+                    state.preview_note,
+                    state.preview_velocity.to_bits(),
+                    self.waveform.sample_rate().to_bits(),
+                );
+                state.preview_sample_index = 0;
                 state.program = program;
                 state.active_source = state.source.clone();
                 state.status = status;
@@ -401,11 +548,48 @@ impl UiModel {
             };
             return state.status.clone();
         };
-        let status = self.set_expression(preset.source.to_owned());
+        self.load_preset_source(preset.source.to_owned(), preset.name)
+    }
+
+    pub fn load_custom_preset(&self, source: String) -> CompileStatus {
+        self.load_custom_preset_state(source, Vec::new(), Vec::new())
+    }
+
+    fn load_custom_preset_state(
+        &self,
+        source: String,
+        parameter_values: Vec<CustomParameterValue>,
+        mut controls: Vec<ControlLayout>,
+    ) -> CompileStatus {
+        let status = self.load_preset_source(source, "Custom");
+        if !status.ok {
+            return status;
+        }
+        let specs = {
+            let mut state = self.state.lock().expect("UI state poisoned");
+            let specs = state.program.parameter_specs().to_vec();
+            if !controls.is_empty() {
+                sanitize_control_layout(&mut controls);
+                reconcile_control_layout(&mut controls, &specs);
+                state.controls = controls;
+            }
+            specs
+        };
+        for saved in parameter_values {
+            if let Some(spec) = specs.iter().find(|spec| spec.name == saved.name) {
+                self.parameters
+                    .set_normalized(spec.index, saved.normalized.clamp(0.0, 1.0));
+            }
+        }
+        status
+    }
+
+    fn load_preset_source(&self, source: String, selected_preset: &str) -> CompileStatus {
+        let status = self.set_expression(source);
         if status.ok {
             let specs = {
                 let mut state = self.state.lock().expect("UI state poisoned");
-                state.selected_preset = preset.name.into();
+                state.selected_preset = selected_preset.into();
                 state.controls = default_control_layout(state.program.parameter_specs());
                 state.program.parameter_specs().to_vec()
             };
@@ -426,7 +610,13 @@ impl UiModel {
             status: state.status.clone(),
             preview_note: state.preview_note,
             preview_velocity: state.preview_velocity,
-            presets: PRESETS.iter().map(|preset| preset.name).collect(),
+            presets: PRESETS
+                .iter()
+                .map(|preset| PresetSummary {
+                    name: preset.name,
+                    category: preset.category,
+                })
+                .collect(),
             sample_rate: self.waveform.sample_rate(),
             active_voices: self.waveform.active_voice_count(),
             active_notes: self.midi_preview.active_notes(),
@@ -448,7 +638,7 @@ impl UiModel {
 
     pub fn waveform_preview(&self, length: usize) -> WaveformPreview {
         self.exchange.collect_retired();
-        let state = self.state.lock().expect("UI state poisoned");
+        let mut state = self.state.lock().expect("UI state poisoned");
         let active_voices = self.waveform.active_voice_count();
         let sample_rate = self.waveform.sample_rate();
         let frequency = MidiNote::new(state.preview_note).frequency();
@@ -463,6 +653,19 @@ impl UiModel {
             };
         }
         let mut samples = Vec::with_capacity(length);
+        let preview_key = (
+            state.preview_note,
+            state.preview_velocity.to_bits(),
+            sample_rate.to_bits(),
+        );
+        if state.preview_key != preview_key {
+            state.preview_instance = state
+                .program
+                .instantiate(sample_rate, None)
+                .expect("compiled preview state must prepare");
+            state.preview_key = preview_key;
+            state.preview_sample_index = 0;
+        }
         let mut input = Inputs {
             s: state.preview_velocity,
             freq: frequency,
@@ -473,11 +676,29 @@ impl UiModel {
             ..Inputs::default()
         };
         self.parameters.fill_inputs(&mut input);
+        let sample_start = state.preview_sample_index;
         for index in 0..length {
-            input.t = index as f32 / sample_rate;
-            input.rand = preview_random(index as u32);
-            samples.push(state.program.evaluate(&input).wave);
+            let absolute_index = sample_start.wrapping_add(index as u64);
+            input.t = absolute_index as f32 / sample_rate;
+            input.rand = preview_random(absolute_index as u32);
+            let note = state.preview_instance.evaluate_note(&input, 0, 0);
+            state.preview_instance.commit_voice(0);
+            state.preview_instance.commit_note(0);
+            let (left, right) = match state.program.note_output_mode() {
+                NoteOutputMode::Mono => {
+                    let left = note.wave * ((1.0 - note.pan) * 0.5).sqrt();
+                    let right = note.wave * ((1.0 + note.pan) * 0.5).sqrt();
+                    (left, right)
+                }
+                NoteOutputMode::Stereo => (note.wave_l, note.wave_r),
+            };
+            input.wave_l = left;
+            input.wave_r = right;
+            let filtered = state.preview_instance.evaluate_filter(&input);
+            state.preview_instance.commit_global();
+            samples.push((filtered.wave_l + filtered.wave_r) * 0.5);
         }
+        state.preview_sample_index = sample_start.wrapping_add(length as u64);
         WaveformPreview {
             samples,
             frequency,
@@ -538,6 +759,13 @@ impl UiModel {
             UiCommand::LoadPreset { name } => {
                 self.load_preset(&name);
             }
+            UiCommand::LoadCustomPreset {
+                source,
+                parameter_values,
+                controls,
+            } => {
+                self.load_custom_preset_state(source, parameter_values, controls);
+            }
             UiCommand::SetParameter { name, value } => {
                 let mut state = self.state.lock().map_err(|_| "UI state poisoned")?;
                 match name.as_str() {
@@ -595,21 +823,50 @@ impl UiModel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase")]
 enum UiCommand {
-    SetExpression { source: String },
-    LoadPreset { name: String },
-    SetParameter { name: String, value: f32 },
-    SetUserParameter { index: usize, value: f32 },
-    SetLayout { controls: Vec<ControlLayout> },
-    SetMode { mode: UiMode },
-    NoteOn { note: u8, velocity: f32 },
-    NoteOff { note: u8 },
-    UiError { message: String },
+    SetExpression {
+        source: String,
+    },
+    LoadPreset {
+        name: String,
+    },
+    LoadCustomPreset {
+        source: String,
+        #[serde(default)]
+        parameter_values: Vec<CustomParameterValue>,
+        #[serde(default)]
+        controls: Vec<ControlLayout>,
+    },
+    SetParameter {
+        name: String,
+        value: f32,
+    },
+    SetUserParameter {
+        index: usize,
+        value: f32,
+    },
+    SetLayout {
+        controls: Vec<ControlLayout>,
+    },
+    SetMode {
+        mode: UiMode,
+    },
+    NoteOn {
+        note: u8,
+        velocity: f32,
+    },
+    NoteOff {
+        note: u8,
+    },
+    UiError {
+        message: String,
+    },
     UiReady,
     RequestWaveform,
 }
 
 fn parameter_label(name: &str) -> String {
-    name.strip_prefix("p_")
+    name.strip_prefix("p.")
+        .or_else(|| name.strip_prefix("p_"))
         .unwrap_or(name)
         .split('_')
         .filter(|part| !part.is_empty())
@@ -936,9 +1193,16 @@ mod tests {
     #[test]
     fn publishes_valid_program_and_preserves_last_valid_on_error() {
         let model = UiModel::new(DEFAULT_SOURCE);
-        assert!(model.set_expression("wave = 0.25\nl_limit = 1".into()).ok);
-        assert!(!model.set_expression("wave = unknown".into()).ok);
-        assert_eq!(model.source(), "wave = 0.25\nl_limit = 1");
+        let valid = "fn note(in, p) -> out {\nout.wave_l = out.wave_r = 0.25\nout.l_limit = 1\n}";
+        assert!(model.set_expression(valid.into()).ok);
+        assert!(
+            !model
+                .set_expression(
+                    "fn note(in, p) -> out {\nout.wave = unknown\nout.l_limit = 1\n}".into()
+                )
+                .ok
+        );
+        assert_eq!(model.source(), valid);
         assert_eq!(model.waveform_preview(64).samples, vec![0.25; 64]);
     }
 
@@ -952,8 +1216,33 @@ mod tests {
     }
 
     #[test]
+    fn factory_presets_expose_categories() {
+        let snapshot = UiModel::new(DEFAULT_SOURCE).snapshot();
+        assert_eq!(snapshot.presets.len(), PRESETS.len());
+        assert!(
+            snapshot
+                .presets
+                .iter()
+                .all(|preset| !preset.category.is_empty())
+        );
+        assert!(
+            snapshot
+                .presets
+                .iter()
+                .any(|preset| preset.category == "Basic")
+        );
+        assert!(
+            snapshot
+                .presets
+                .iter()
+                .any(|preset| preset.category == "Pad")
+        );
+    }
+
+    #[test]
     fn exposes_parameters_and_persists_play_layout() {
-        let model = UiModel::new("p_tone = param(0.25, 0, 2, 0.01)\nwave = p_tone\nl_limit = 1");
+        let source = "p.tone = param(0.25, 0, 2, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
+        let model = UiModel::new(source);
         let snapshot = model.snapshot();
         assert_eq!(snapshot.parameters.len(), 1);
         assert_eq!(snapshot.parameters[0].value, 0.25);
@@ -964,7 +1253,7 @@ mod tests {
             .handle_json(r#"{"cmd":"setMode","mode":"play"}"#)
             .unwrap();
         model
-            .handle_json(r#"{"cmd":"setLayout","controls":[{"name":"p_tone","kind":"slider","x":20,"y":10,"width":70,"height":80}]}"#)
+            .handle_json(r#"{"cmd":"setLayout","controls":[{"name":"p.tone","kind":"slider","x":20,"y":10,"width":70,"height":80}]}"#)
             .unwrap();
         let snapshot = model.snapshot();
         assert!((snapshot.parameters[0].value - 1.5).abs() < 0.0001);
@@ -975,7 +1264,7 @@ mod tests {
 
         // 大きくした後に移動しても、サイズを初期値へ戻してはならない。
         model
-            .handle_json(r#"{"cmd":"setLayout","controls":[{"name":"p_tone","kind":"slider","x":5,"y":5,"width":70,"height":80}]}"#)
+            .handle_json(r#"{"cmd":"setLayout","controls":[{"name":"p.tone","kind":"slider","x":5,"y":5,"width":70,"height":80}]}"#)
             .unwrap();
         let moved = model.snapshot();
         assert_eq!(moved.controls[0].x, 5.0);
@@ -984,7 +1273,7 @@ mod tests {
         assert_eq!(moved.controls[0].height, 80.0);
 
         let saved = model.layout_json();
-        let restored = UiModel::new("p_tone = param(0.25, 0, 2, 0.01)\nwave = p_tone\nl_limit = 1");
+        let restored = UiModel::new(source);
         restored.restore_layout_json(&saved).unwrap();
         let restored = restored.snapshot();
         assert_eq!(restored.controls[0].x, 5.0);
@@ -1048,15 +1337,48 @@ mod tests {
     }
 
     #[test]
+    fn loading_a_custom_preset_restores_saved_values_and_layout() {
+        let source = "p.tone = param(0.75, 0, 1, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
+        let model = UiModel::new(DEFAULT_SOURCE);
+        let values = vec![CustomParameterValue {
+            name: "p.tone".into(),
+            normalized: 0.25,
+        }];
+        let controls = vec![ControlLayout {
+            name: "p.tone".into(),
+            kind: "slider".into(),
+            x: 40.0,
+            y: 35.0,
+            width: 32.0,
+            height: 28.0,
+        }];
+        assert!(
+            model
+                .load_custom_preset_state(source.into(), values, controls)
+                .ok
+        );
+        let reset = model.snapshot();
+        assert_eq!(reset.selected_preset, "Custom");
+        assert!((reset.parameters[0].normalized - 0.25).abs() < 0.0001);
+        assert_eq!(reset.controls[0].kind, "slider");
+        assert_eq!(reset.controls[0].x, 40.0);
+        assert_eq!(reset.controls[0].y, 35.0);
+        assert_eq!(reset.controls[0].width, 32.0);
+        assert_eq!(reset.controls[0].height, 28.0);
+    }
+
+    #[test]
     fn compile_status_includes_actionable_hint() {
         let model = UiModel::new(DEFAULT_SOURCE);
-        let status = model.set_expression("wave = frqe\nl_limit = 1".into());
+        let status = model.set_expression(
+            "fn note(in, p) -> out {\nout.wave = in.frqe\nout.l_limit = 1\n}".into(),
+        );
         assert!(!status.ok);
         assert!(
             status
                 .hint
                 .as_deref()
-                .is_some_and(|hint| hint.contains("freq"))
+                .is_some_and(|hint| hint.contains("in.freq"))
         );
     }
 }

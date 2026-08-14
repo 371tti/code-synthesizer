@@ -14,7 +14,8 @@ README で定義していた最初の MVP は実装済みです。
 - Lexer / Parser / Validator / Cranelift JIT backend を備えた DSL
 - 非 RT スレッドでのコンパイルと Audio block 境界での hot reload
 - phase lock 付き live 波形、プリセット、プレビュー鍵盤
-- `p_*` ユーザーパラメータ、配置可能な knob / slider / toggle、VST3 automation
+- `p.*` ユーザーパラメータ、MIDI CC link、配置可能な knob / slider / toggle、VST3 automation
+- `fn note` / optional `fn filter`、user function、true stereo、3 domain persistent state、transactional `RingBuf`
 - ソース、パラメータ値、Play レイアウト、画面モードを含む plugin state 保存・復元
 
 ## ギャラリー
@@ -86,65 +87,69 @@ version はルート `Cargo.toml` の `[workspace.package]` にある `version` 
 プラグイン画面の Editor モードで DSL を編集すると、260 ms の debounce 後に自動コンパイルされます。成功したプログラムだけが Audio block 境界で DSP へ渡されるため、編集中に構文エラーがあっても直前の正常な音は継続します。Monaco には DSL 補完、snippet、hover、引数ヒント、コンパイラ marker、候補名の quick fix が入っています。
 
 ```text
-p_attack_ms = param(8.33, 1, 200, 0.1)
-p_release_s = param(1.5, 0.1, 6, 0.01)
-p_gain = param(1, 0, 1.5, 0.01)
+p.attack_ms = param(8.33, 1, 200, 0.1)
+p.release_s = param(1.5, 0.1, 6, 0.01)
+p.gain = param(1, 0, 1.5, 0.01, 7)
 
-attack = min(t * 1000 / p_attack_ms, 1)
-# 大きい Release S は常に長いリリースになる
-release = exp(-9 * l / p_release_s)
-env = attack * release
-
-wave = p_gain * env * s * sin(TAU * freq * t)
-pan = midi_pan
-l_limit = p_release_s
+fn note(in, p) -> out {
+    attack = min(in.t * 1000 / p.attack_ms, 1)
+    release = exp(-9 * in.l / p.release_s)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release
+        * sin(TAU * in.freq * in.t)
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}
 ```
 
-`p_* = param(default, min, max, step)` を宣言すると、Play モードの鍵盤上にコントロールが自動作成され、DAW には automation 可能な VST3 parameter として公開されます。`p_` で始まる名前が必須で、`step` は省略可能です。式へ渡る値はこの範囲・stepで量子化された実数です。
+`p.name = param(default, min, max, step, cc_link?)` は最初の `fn` より前に宣言します。最初の4値は必須、MIDI CC番号だけ省略可能です。Play modeとDAWにはautomation可能なparameterとして宣言順で公開されます。
 
 Play の `Guide` では記法、意味の作り方、配置、automationを確認できます。`Arrange` 中はドラッグで移動、右下ハンドルでリサイズします。位置・大きさ・表示形式はプロジェクトに保存されます。右クリックでは reset、値の copy/paste、knob / slider / toggle の切替を行えます。
 
-`Parameter Guide` プリセットは同じ内容をコメントだけで解説する、編集して使えるサンプルです。さらに Velocity Piano、MPE Lead、Expressive Strings、CC74 Pluck、MIDI Bass、Motion Pad を追加しています。いずれも velocity、CC1 (MW)、CC10 pan、CC74、channel/poly pressure、expressionのうち音色に適した入力を使い、engineが適用するMIDI gainを二重に掛けません。
+`Parameter Guide` はparameter、通常関数、qualified bundle、persistent scalar、true stereo、RingBuf、post-mix filterをコメントで解説する実行可能なサンプルです。v2ではengineがMIDI gain/panを暗黙適用しないため、`in.vol`、`in.mexpr`、`in.midi_pan` はDSLで明示的に使用します。
+
+Factory Presetsは32種類です。Basic、Lead、Pluck、Bass、Keys、Pad、Ensemble、Percussionなどの分類を内包したProgram menuから選択できます。基本音作り向けの`Basic Synth`と`SuperSaw`に加え、`Wavefold Lead`、`Glass Pluck`、`Resonant Bells`、`Lo-Fi Keys`、`Deep Space`、`Tape Echo`、`Phase Motion`、`Metal Drum`を収録しています。新しい音色ではKarplus-Strong、modal resonator、filter、multitap delay、reverb、waveshaperなどの標準DSPを実用例として使っています。
+
+Preset panelのNameへ名前を入力して`Save`すると、現在のコード、parameter値、Play layoutを`Custom`分類へ保存できます。同名の保存は更新になり、CustomのLoadでは保存時の値と配置を復元します。Custom libraryはWebViewのlocal storageへ保存されます。
 
 下部の鍵盤とPCキーはプレビュー用で、通常の DAW MIDI 入力も同じ SynthEngine へ送られます。Wave は発音中に audio callback の実出力を表示し、無音時はコンパイル済み式の静的プレビューへ切り替わります。モニターは余剰サンプルから連続フレームを切り出すため、右端で波形を循環させません。(循環させてひどい目にあった)
 
 ## DSL リファレンス
 
-代入は上から順に評価されます。`wave` は必須です。`=` のない次行は直前の式の続きとして扱われ、`#` または `//` 以降はコメントです。正常にparseされた式はCranelift IRへ変換され、プログラム全体がホストCPU向けのネイティブ関数としてJITコンパイルされます。
+programには `fn note(in, p) -> out` がちょうど1つ必要で、`fn filter(in, p) -> out` は省略できます。通常関数は `fn name(in) -> out` と定義し、`result = name(input_bundle)` と呼びます。forward referenceは可能、recursionはcompile errorです。
 
-ユーザーパラメータは最大32個です。範囲と既定値は実数、`step` は省略可能です。宣言順がVST parameter slotになります。演奏者が直感的に扱えるよう、時間を示す値は `p_release_s` / `p_attack_ms` のように単位を名前へ含め、値を増やしたときの音の変化を式側でも一致させることを推奨します。
+localはstatement順に再代入できます。比較はf32の0/1を返します。`#` と `//` は行コメントです。`2s`、`500ms`、`250us` の時間suffixと `k/m/u/g` のSI suffixを利用できます。
 
-ローカル変数の数や式の長さには DSL 側の固定上限はありません。多くの変数、または 1 サンプルあたり 512 個を超える演算を含むプログラムもコンパイルされますが、発音数に応じて CPU 負荷が増える可能性があるため `Warning` を表示します。`p_*` はローカル変数ではなく DAW の VST automation slot なので、ホストと確実に同期するため最大32個です?
+persistent scalarは初期値必須です。`voice` はVoice slot、`note` は `(channel,note)`、`global` はplugin instanceで共有します。RingBufはsample単位でtransactionalに動作します。
 
 ```text
-p_cutoff = param(1200, 20, 20000, 1)
-p_mix = param(0.5, 0, 1, 0.01)
+f32 voice phase = 0
+f32 note energy = 0
+f32 global master = 1
+RingBuf<f32, 180ms> global delay
 ```
+
+完全一致するstorage schemaはhot reload後も維持され、sample rate変更時は全stateをresetします。ローカル、演算、storage、RingBuf容量には言語上の固定上限を設けず、負荷が大きい場合は `Warning` を表示します。parameterだけはVST automation slotとの同期のため最大32個です。
 
 主要入力:
 
 | 名前                                         | 内容                                  |
 | -------------------------------------------- | ------------------------------------- |
-| `t`                                          | Note On からの秒数                    |
-| `l`                                          | Note Off からの秒数。押下中は `0`     |
-| `s`                                          | Velocity `0..1`                       |
-| `freq` / `note` / `ch`                       | 周波数、MIDI note、MIDI channel       |
-| `bend` / `bend_st`                           | Pitch Bend `-1..1`、半音換算値        |
-| `mw` / `vol` / `midi_pan` / `mexpr`          | CC 1 / 7 / 10 / 11                    |
-| `sustain`                                    | CC 64 の状態                          |
-| `pressure` / `poly_pressure`                 | Channel / Poly Pressure               |
-| `program` / `cc(n)`                          | Program Change、任意 CC `0..127`      |
-| `sr`                                         | Sample rate                           |
-| `tempo` / `beat` / `bar` / `ppq` / `playing` | DAW transport                         |
-| `voice` / `rand`                             | Voice index、voice ごとの乱数 `-1..1` |
+| `in.t` / `in.l` / `in.s`                    | Note On秒、Note Off秒、Velocity       |
+| `in.freq` / `in.note` / `in.ch`             | 周波数、MIDI note、MIDI channel       |
+| `in.bend` / `in.bend_st`                    | Pitch Bend `-1..1`、半音換算値        |
+| `in.mw` / `in.vol` / `in.midi_pan` / `in.mexpr` | CC 1 / 7 / 10 / 11               |
+| `in.sustain` / pressure fields              | Sustain / Channel / Poly Pressure     |
+| `in.program` / `in.cc(n)`                   | Program Change、任意 CC               |
+| `in.sr` / transport fields                  | Sample rate / DAW transport           |
+| `in.voice` / `in.rand`                      | Voice index / Voice固有乱数           |
 
 出力:
 
 | 名前      | 内容                                     |
 | --------- | ---------------------------------------- |
-| `wave`    | Voice のモノラル波形。必須               |
-| `pan`     | Voice pan `-1..1`。省略時 `0`            |
-| `l_limit` | Note Off 後に voice を終了する秒数。必須 |
+| `out.wave` / `out.pan` | mono Voice波形 / pan |
+| `out.wave_l` / `out.wave_r` | true stereo Voice波形 |
+| `out.l_limit` | Note Off後にVoiceを終了する秒数。必須 |
 
 定数は `TAU`、`PI`、`E`、`PHI`、演算子は `+ - * / % ^` を使用できます。
 
@@ -154,9 +159,12 @@ p_mix = param(0.5, 0, 1, 0.01)
 sin cos tan asin acos atan atan2 sinh cosh
 exp sqrt cbrt abs tanh ln log log2 log10
 floor ceil round fract sign
-min max pow mod clamp mix cc
+min max pow mod clamp mix step smoothstep select
+mtof ftom dbtoa atodb cent_ratio semitone_ratio
 saw square pulse triangle noise
 ```
+
+RingBufの`peek` / `peek_linear` / `len` / `duration`、Biquad係数、Window、Filter、Delay、Physical Modeling、Modulation、Distortion、Dynamics、Smoothing、Stereo、Reverbを標準搭載しています。全signature、単位、bundle field、state domainは[DSL Standard Library](docs/dsl-standard-library.md)を参照してください。state付きDSPはcall siteごとにAudio thread外でmemoryを準備し、`note`ではVoice単位、`filter`ではglobalに動作します。
 
 ## 構成
 
@@ -195,7 +203,7 @@ Audio callback 内では次を行いません。
 - filesystem、WebView、JSON、DSL parsing
 - program の破棄や重い初期化
 
-Voice は固定容量です。UI thread がCraneliftでネイティブコード化した `Program` を bounded lock-free queue へ publishし、Audio thread はblock先頭でpointerを交換します。1 sampleの評価は生成済み関数の直接呼び出しだけで、IR走査・評価stack・allocation・lockはありません。旧programと実行メモリは別queueへ返し、実行中でないことが確定した後にUI thread側で破棄します。`p_*` の値とoscilloscope ring bufferもatomicな固定容量storageで共有します。
+VoiceとNote-domain slotは固定容量です。UI thread がCraneliftでネイティブコード化し、persistent stateを準備した `ProgramInstance` をbounded lock-free queueへpublishします。Audio threadはblock先頭でpointerを交換し、1 sampleでは生成済みnote/filter関数と固定state descriptorだけを使用します。旧programと実行メモリは別queueへ返し、UI thread側で破棄します。`p.*` の値とoscilloscope ring bufferはatomicな固定容量storageで共有します。
 
 ## えとせとら
 
@@ -222,4 +230,4 @@ VST3 の UI lifecycle、WebView2 生成、asset 配信、Monaco 起動結果は�
 `CODE_SYNTH_UI_DEVTOOLS=1` を設定してから DAW を起動すると、エディター表示時に WebView2 DevTools も開きます。
 
 ## wiwiwi
-`modal`、`resonator`、`delay`、filter、history など状態付き DSP primitive と standalone Web 版は今後の拡張候補です。DSL と DSP コアは UI/VST3 から独立しているため、Web 版でも同じ compiler/runtime を再利用するつもりです。ういー
+standalone Web版と、semantic analyzerを直接利用するさらに高度なEditor refactoringは今後の拡張候補です。DSLとDSPコアはUI/VST3から独立しているため、Web版でも同じcompiler/runtimeを再利用できます。

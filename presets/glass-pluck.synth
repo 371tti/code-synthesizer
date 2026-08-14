@@ -1,0 +1,21 @@
+# GLASS PLUCK — Karplus弦と高域resonatorによる透明なPluck
+p.gain = param(0.64, 0, 1.5, 0.01)
+p.decay_s = param(2.2, 0.1, 10, 0.01)
+p.release_s = param(1.1, 0.02, 6, 0.01)
+p.damping = param(0.82, 0.1, 0.99, 0.01)
+p.glass_mix = param(0.42, 0, 1, 0.01, 74)
+p.sparkle = param(0.35, 0, 1, 0.01)
+p.pan_spread = param(0.45, 0, 1, 0.01)
+
+fn note(in, p) -> out {
+    excite = exciter.noise(in.t, 6ms)
+    string = string.karplus(excite, in.freq, p.decay_s, p.damping)
+    glass = resonator(excite, in.freq * 3.01, p.decay_s * 0.55)
+        + 0.55 * resonator(excite, in.freq * 5.02, p.decay_s * 0.3)
+    shimmer = p.sparkle * sin(TAU * in.freq * 7.01 * in.t) * exp(-9 * in.t)
+    release = exp(-8 * in.l / p.release_s)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * release
+        * (string + p.glass_mix * glass + shimmer)
+    out.pan = clamp(in.midi_pan + p.pan_spread * sin(in.voice * 1.91), -1, 1)
+    out.l_limit = p.release_s
+}

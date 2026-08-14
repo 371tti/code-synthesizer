@@ -1,10 +1,15 @@
-p_attack_s = param(0.667, 0.01, 4, 0.001)
-p_release_s = param(3, 0.2, 12, 0.1)
-p_drift = param(0.18, 0, 1, 0.01)
-p_spread = param(0.35, 0, 1, 0.01)
-attack = min(t/p_attack_s, 1)
-release = exp(-7.5*l / p_release_s)
-drift = p_drift*sin(TAU*0.17*t + voice)
-wave = 0.5*s*attack*release*(sin(TAU*freq*t + drift) + 0.45*sin(TAU*freq*1.005*t))
-pan = midi_pan + p_spread*sin(voice*2.4)
-l_limit = p_release_s
+p.attack_s = param(0.667, 0.01, 4, 0.001)
+p.release_s = param(3, 0.2, 12, 0.1)
+p.drift = param(0.18, 0, 1, 0.01)
+p.spread = param(0.35, 0, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-7.5 * in.l / p.release_s)
+    drift = p.drift * sin(TAU * 0.17 * in.t + in.voice)
+    out.wave = 0.5 * in.s * in.vol * in.mexpr * attack * release
+        * (sin(TAU * in.freq * in.t + drift)
+        + 0.45 * sin(TAU * in.freq * 1.005 * in.t))
+    out.pan = in.midi_pan + p.spread * sin(in.voice * 2.4)
+    out.l_limit = p.release_s
+}

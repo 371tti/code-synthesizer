@@ -1,0 +1,29 @@
+# ACID BASS — Standard SVFとwaveshaperを使う303系Bass
+p.gain = param(0.72, 0, 1.5, 0.01)
+p.attack_s = param(0.004, 0.001, 0.2, 0.001)
+p.decay_s = param(0.42, 0.03, 3, 0.01)
+p.sustain = param(0.18, 0, 1, 0.01)
+p.release_s = param(0.18, 0.02, 2, 0.01)
+p.cutoff_hz = param(620, 35, 8000, 1, 74)
+p.env_octave = param(3.2, 0, 6, 0.01)
+p.filter_decay_s = param(0.24, 0.02, 2, 0.01)
+p.resonance = param(0.82, 0.1, 1.8, 0.01)
+p.saw_mix = param(0.72, 0, 1, 0.01)
+p.pulse_width = param(0.43, 0.08, 0.92, 0.01)
+p.drive = param(2.1, 0.5, 8, 0.01)
+p.accent = param(0.45, 0, 1, 0.01)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    body_env = p.sustain + (1 - p.sustain) * exp(-6 * in.t / p.decay_s)
+    release = exp(-9 * in.l / p.release_s)
+    filter_env = exp(-6 * in.t / p.filter_decay_s)
+    cutoff = clamp(p.cutoff_hz * exp2(p.env_octave * filter_env * (0.55 + p.accent * in.s)),
+        20, in.sr * 0.45)
+    source = mix(pulse(in.freq, in.t, p.pulse_width), saw(in.freq, in.t), p.saw_mix)
+    shaped = waveshaper(source, p.drive, 0.82)
+    tone = filter.svf.lp(shaped, cutoff, p.resonance, in.sr)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * body_env * release * tone
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

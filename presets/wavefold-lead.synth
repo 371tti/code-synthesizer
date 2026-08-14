@@ -1,0 +1,24 @@
+# WAVEFOLD LEAD — wavefoldとphaserを使う明るいMono Lead
+p.gain = param(0.56, 0, 1.5, 0.01)
+p.attack_s = param(0.006, 0.001, 1, 0.001)
+p.release_s = param(0.42, 0.03, 4, 0.01)
+p.fold = param(2.4, 0.1, 8, 0.01)
+p.cutoff_hz = param(4200, 100, 15000, 1, 74)
+p.resonance = param(0.55, 0.1, 1.5, 0.01)
+p.phaser_mix = param(0.24, 0, 1, 0.01)
+p.vibrato_hz = param(5.2, 0.1, 12, 0.1)
+p.vibrato_ms = param(1.6, 0, 10, 0.1)
+
+fn note(in, p) -> out {
+    attack = min(in.t / p.attack_s, 1)
+    release = exp(-8 * in.l / p.release_s)
+    freq = in.freq * cent_ratio(25 * in.mw * sin(TAU * p.vibrato_hz * in.t))
+    raw = sin(TAU * freq * in.t) + 0.35 * triangle(freq * 2, in.t)
+    folded = wavefold(raw, p.fold)
+    filtered = filter.svf.lp(folded, p.cutoff_hz, p.resonance, in.sr)
+    phased = phaser(filtered, 0.22, 0.65, 0.48)
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release
+        * mix(filtered, phased, p.phaser_mix)
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}

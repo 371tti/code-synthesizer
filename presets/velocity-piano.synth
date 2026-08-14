@@ -1,17 +1,18 @@
-# Velocity Piano — ベロシティでハンマーの明るさを変え、チャンネルプレッシャーで胴鳴りを加えます。
-p_gain = param(0.8, 0, 1.4, 0.01)
-p_brightness = param(0.7, 0, 1, 0.01)
-p_release_s = param(2.2, 0.2, 8, 0.01)
-p_hammer = param(0.55, 0, 1, 0.01)
-
-attack = min(t / 0.004, 1)
-release = exp(-9 * l / p_release_s)
-velocity_brightness = p_brightness * (0.25 + 0.75 * s)
-hammer = exp(-38 * t) * (p_hammer + velocity_brightness)
-fundamental = sin(TAU * freq * t)
-partial_2 = 0.28 * velocity_brightness * sin(TAU * freq * 2.01 * t)
-partial_3 = 0.11 * velocity_brightness * sin(TAU * freq * 3.99 * t)
-body = 0.85 + 0.15 * pressure
-wave = p_gain * s * attack * release * body * tanh(1.25 * (fundamental + partial_2 + partial_3 + hammer))
-pan = midi_pan
-l_limit = p_release_s
+p.gain = param(0.8, 0, 1.4, 0.01)
+p.brightness = param(0.7, 0, 1, 0.01)
+p.release_s = param(2.2, 0.2, 8, 0.01)
+p.hammer = param(0.55, 0, 1, 0.01)
+fn note(in, p) -> out {
+    attack = min(in.t / 0.004, 1)
+    release = exp(-9 * in.l / p.release_s)
+    velocity_brightness = p.brightness * (0.25 + 0.75 * in.s)
+    hammer = exp(-38 * in.t) * (p.hammer + velocity_brightness)
+    fundamental = sin(TAU * in.freq * in.t)
+    partial_2 = 0.28 * velocity_brightness * sin(TAU * in.freq * 2.01 * in.t)
+    partial_3 = 0.11 * velocity_brightness * sin(TAU * in.freq * 3.99 * in.t)
+    body = 0.85 + 0.15 * in.pressure
+    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * body
+        * tanh(1.25 * (fundamental + partial_2 + partial_3 + hammer))
+    out.pan = in.midi_pan
+    out.l_limit = p.release_s
+}
