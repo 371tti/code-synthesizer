@@ -11,7 +11,7 @@ README で定義していた最初の MVP は実装済みです。
 - 64 voice のポリフォニック SynthEngine
 - MIDI Note On/Off、CC、Pitch Bend、Pressure、Sustain、Program Change
 - MathSynth から引き継いだ Monaco / WebView2 UI と Editor / Play モード
-- Lexer / Parser / Validator / Bytecode Compiler を備えた DSL
+- Lexer / Parser / Validator / Cranelift JIT backend を備えた DSL
 - 非 RT スレッドでのコンパイルと Audio block 境界での hot reload
 - phase lock 付き live 波形、プリセット、プレビュー鍵盤
 - `p_*` ユーザーパラメータ、配置可能な knob / slider / toggle、VST3 automation
@@ -29,12 +29,12 @@ README で定義していた最初の MVP は実装済みです。
 
 - Windows x86_64
 - 64-bit VST3 対応 DAW
-- Rust stable（Rust 2024 edition 対応版）
+- Rust 1.94 以上
 - Node.js `^20.19.0` または `>=22.12.0`
 - npm
 - Microsoft Edge WebView2 Runtime (システムのWebViewでOk つまりLinux非対応)
 
-このリポジトリでは Rust 1.92.0、Node.js 24.6.0、npm 11.5.1 で検証しています。
+このリポジトリでは Rust 1.97.1、Node.js 24.6.0、npm 11.5.1 で検証しています。
 
 ## ビルド
 
@@ -110,7 +110,7 @@ Play の `Guide` では記法、意味の作り方、配置、automationを確�
 
 ## DSL リファレンス
 
-代入は上から順に評価されます。`wave` は必須です。`=` のない次行は直前の式の続きとして扱われ、`#` または `//` 以降はコメントです。
+代入は上から順に評価されます。`wave` は必須です。`=` のない次行は直前の式の続きとして扱われ、`#` または `//` 以降はコメントです。正常にparseされた式はCranelift IRへ変換され、プログラム全体がホストCPU向けのネイティブ関数としてJITコンパイルされます。
 
 ユーザーパラメータは最大32個です。範囲と既定値は実数、`step` は省略可能です。宣言順がVST parameter slotになります。演奏者が直感的に扱えるよう、時間を示す値は `p_release_s` / `p_attack_ms` のように単位を名前へ含め、値を増やしたときの音の変化を式側でも一致させることを推奨します。
 
@@ -170,13 +170,13 @@ DAW
                     └─ DSL Compiler
                          │ lock-free queue
                          ▼
-SynthEngine ─ Voice Engine ─ Compiled DSL Runtime
+SynthEngine ─ Voice Engine ─ Cranelift JIT Runtime
 ```
 
 ```text
 crates/
   synth-core/   固定 voice、MIDI state、stereo DSP、program/parameter/waveform共有
-  synth-dsl/    lexer、parser、validation、bytecode compiler/runtime
+  synth-dsl/    lexer、parser、validation、Cranelift IR/JIT backend
   synth-vst3/   VST3 component/controller/view/factory
   synth-ui/     WebView2、IPC、preset、waveform preview
 ui/             Monaco ベース UI
@@ -195,7 +195,7 @@ Audio callback 内では次を行いません。
 - filesystem、WebView、JSON、DSL parsing
 - program の破棄や重い初期化
 
-Voice と評価スタックは固定容量です。UI thread がコンパイル済み `Program` を bounded lock-free queue へ publish し、Audio thread は block 先頭で pointer を交換します。旧 program は別 queue へ返し、UI thread 側で破棄します。`p_*` の値と oscilloscope ring buffer も atomic な固定容量ストレージで共有します。
+Voice は固定容量です。UI thread がCraneliftでネイティブコード化した `Program` を bounded lock-free queue へ publishし、Audio thread はblock先頭でpointerを交換します。1 sampleの評価は生成済み関数の直接呼び出しだけで、IR走査・評価stack・allocation・lockはありません。旧programと実行メモリは別queueへ返し、実行中でないことが確定した後にUI thread側で破棄します。`p_*` の値とoscilloscope ring bufferもatomicな固定容量storageで共有します。
 
 ## えとせとら
 

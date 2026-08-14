@@ -10,7 +10,7 @@ use crossbeam_queue::ArrayQueue;
 use std::hint::spin_loop;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
-use synth_dsl::{EvaluationScratch, Inputs, MAX_USER_PARAMETERS, ParameterSpec, Program};
+use synth_dsl::{Inputs, MAX_USER_PARAMETERS, ParameterSpec, Program};
 
 pub const MAX_VOICES: usize = 64;
 pub const MIDI_CHANNELS: usize = 16;
@@ -306,20 +306,15 @@ impl Voice {
     }
 }
 
-/// コンパイル済みのプログラムと、その評価用に事前確保した作業領域です。
-///
-/// 作業領域は UI スレッドで確保され、音声スレッドでは交換するだけです。
+/// Craneliftでネイティブコード化されたプログラムです。
 struct RuntimeProgram {
     program: Box<Program>,
-    scratch: EvaluationScratch,
 }
 
 impl RuntimeProgram {
     fn new(program: Program) -> Self {
-        let scratch = program.evaluation_scratch();
         Self {
             program: Box::new(program),
-            scratch,
         }
     }
 }
@@ -649,8 +644,7 @@ impl SynthEngine {
             input.rand = voice.next_random();
             input.cc = channel.cc;
 
-            let RuntimeProgram { program, scratch } = self.program.as_mut();
-            let output = program.evaluate_with(&input, scratch);
+            let output = self.program.program.evaluate(&input);
             let pan = (output.pan + channel.pan).clamp(-1.0, 1.0);
             let level = channel.volume * channel.expression;
             let gain_l = ((1.0 - pan) * 0.5).sqrt();

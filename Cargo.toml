@@ -1,6 +1,7 @@
 [package]
 name = "code-synthesizer"
 version.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
 [workspace]
@@ -15,7 +16,8 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
+rust-version = "1.94"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

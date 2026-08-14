@@ -1,7 +1,14 @@
 [package]
 name = "synth-dsl"
 version.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
-[lints]
-workspace = true
+[lints.rust]
+# jit moduleだけが関数ポインタ呼び出しと実行メモリ解放を個別に許可します。
+unsafe_code = "deny"
+
+[dependencies]
+cranelift = "=0.134.3"
+cranelift-jit = "=0.134.3"
+cranelift-module = "=0.134.3"

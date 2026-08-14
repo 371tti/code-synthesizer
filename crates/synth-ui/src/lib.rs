@@ -473,11 +473,10 @@ impl UiModel {
             ..Inputs::default()
         };
         self.parameters.fill_inputs(&mut input);
-        let mut scratch = state.program.evaluation_scratch();
         for index in 0..length {
             input.t = index as f32 / sample_rate;
             input.rand = preview_random(index as u32);
-            samples.push(state.program.evaluate_with(&input, &mut scratch).wave);
+            samples.push(state.program.evaluate(&input).wave);
         }
         WaveformPreview {
             samples,

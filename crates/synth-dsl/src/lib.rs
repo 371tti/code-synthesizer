@@ -1,10 +1,12 @@
-//! Parser and real-time-safe evaluator for the synth expression language.
+//! Parser and Cranelift JIT compiler for the synth expression language.
 //!
-//! コンパイルは音声スレッド外で行います。音声スレッドでは
-//! [`Program::evaluation_scratch`] で事前確保した作業領域を再利用するため、
-//! 評価中にメモリ確保やロックは行いません。
+//! DSLのスタックIRを音声スレッド外でネイティブコードへコンパイルします。
+//! 音声スレッドは生成済み関数を直接呼ぶため、評価中にメモリ確保やlockは行いません。
 
-use std::fmt;
+#[allow(unsafe_code)]
+mod jit;
+
+use std::{fmt, sync::Arc};
 
 pub const MAX_USER_PARAMETERS: usize = 32;
 
@@ -14,6 +16,7 @@ const OPERATION_WARNING_THRESHOLD: usize = 512;
 const STACK_WARNING_THRESHOLD: usize = 128;
 
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct Inputs {
     pub t: f32,
     pub l: f32,
@@ -108,6 +111,7 @@ impl ParameterSpec {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct Outputs {
     pub wave: f32,
     pub pan: f32,
@@ -179,6 +183,7 @@ enum InputId {
 }
 
 impl InputId {
+    #[cfg(test)]
     fn read(self, input: &Inputs) -> f32 {
         match self {
             Self::T => input.t,
@@ -303,57 +308,63 @@ struct Assignment {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    #[cfg(test)]
     assignments: Vec<Assignment>,
+    #[cfg(test)]
     wave: usize,
+    #[cfg(test)]
     pan: Option<usize>,
+    #[cfg(test)]
     l_limit: usize,
     variable_count: usize,
+    #[cfg(test)]
     max_stack: usize,
     operation_count: usize,
     performance_warnings: Vec<String>,
     parameters: Vec<ParameterSpec>,
+    jit: Arc<jit::JitProgram>,
 }
 
-/// 事前に確保して、繰り返し評価に使う一時領域です。
+/// 繰り返し評価APIとの互換性を保つための評価コンテキストです。
 ///
-/// `SynthEngine` はこれをプログラムと一緒に保持するため、音声処理中に
-/// allocation は発生しません。
-#[derive(Clone, Debug)]
-pub struct EvaluationScratch {
-    values: Vec<f32>,
-    stack: Vec<f32>,
-}
+/// Cranelift JITは式の一時値をネイティブコード内で管理するため、現在は
+/// データを保持しません。音声処理中のallocationやlockは発生しません。
+#[derive(Clone, Debug, Default)]
+pub struct EvaluationScratch;
 
 impl Program {
     /// 手軽に一回だけ評価するためのメソッドです。
     ///
-    /// このメソッドは作業領域を新規確保するため、音声コールバックでは
-    /// [`Program::evaluate_with`] と [`Program::evaluation_scratch`] を使ってください。
+    /// Craneliftで生成済みのネイティブコードを直接呼び出します。
     pub fn evaluate(&self, input: &Inputs) -> Outputs {
-        let mut scratch = self.evaluation_scratch();
-        self.evaluate_with(input, &mut scratch)
+        self.jit.evaluate(input)
     }
 
     pub fn evaluation_scratch(&self) -> EvaluationScratch {
-        EvaluationScratch {
-            values: vec![0.0; self.variable_count],
-            stack: vec![0.0; self.max_stack.max(1)],
+        EvaluationScratch
+    }
+
+    /// 生成済みネイティブコードでプログラムを評価します。
+    pub fn evaluate_with(&self, input: &Inputs, _scratch: &mut EvaluationScratch) -> Outputs {
+        self.jit.evaluate(input)
+    }
+
+    #[cfg(test)]
+    fn evaluate_interpreted(&self, input: &Inputs) -> Outputs {
+        let mut values = vec![0.0; self.variable_count];
+        let mut stack = vec![0.0; self.max_stack.max(1)];
+        for assignment in &self.assignments {
+            values[assignment.slot] = evaluate_code(&assignment.code, input, &values, &mut stack);
+        }
+        Outputs {
+            wave: finite_or(values[self.wave], 0.0),
+            pan: finite_or(self.pan.map_or(0.0, |slot| values[slot]), 0.0).clamp(-1.0, 1.0),
+            l_limit: finite_or(values[self.l_limit], 0.0),
         }
     }
 
-    /// 作業領域を再利用してプログラムを評価します。
-    pub fn evaluate_with(&self, input: &Inputs, scratch: &mut EvaluationScratch) -> Outputs {
-        debug_assert!(scratch.values.len() >= self.variable_count);
-        debug_assert!(scratch.stack.len() >= self.max_stack);
-        for assignment in &self.assignments {
-            scratch.values[assignment.slot] =
-                evaluate_code(&assignment.code, input, &scratch.values, &mut scratch.stack);
-        }
-        Outputs {
-            wave: finite_or(scratch.values[self.wave], 0.0),
-            pan: finite_or(self.pan.map_or(0.0, |slot| scratch.values[slot]), 0.0).clamp(-1.0, 1.0),
-            l_limit: finite_or(scratch.values[self.l_limit], 0.0),
-        }
+    pub fn execution_backend(&self) -> &'static str {
+        "Cranelift JIT"
     }
 
     pub fn variable_count(&self) -> usize {
@@ -373,6 +384,7 @@ impl Program {
     }
 }
 
+#[cfg(test)]
 fn evaluate_code(code: &[Op], input: &Inputs, values: &[f32], stack: &mut [f32]) -> f32 {
     let mut len = 0usize;
     for op in code {
@@ -639,20 +651,36 @@ impl Compiler {
                 "1 つの式が {max_stack} 個の演算を含みます。式を分割すると、編集と性能調整がしやすくなる場合があります。"
             ));
         }
+        let wave = outputs[0].expect("wave output validated above");
+        let pan = outputs[1];
+        let l_limit = outputs[2].expect("l_limit output validated above");
+        let jit = jit::JitProgram::compile(&assignments, names.len(), wave, pan, l_limit).map_err(
+            |message| {
+                CompileError::new(format!("Cranelift JIT compilation failed: {message}"), 1, 1)
+                    .with_hint("This host must support Cranelift native JIT execution.")
+            },
+        )?;
         Ok(Program {
+            #[cfg(test)]
             assignments,
-            wave: outputs[0].expect("wave output validated above"),
-            pan: outputs[1],
-            l_limit: outputs[2].expect("l_limit output validated above"),
+            #[cfg(test)]
+            wave,
+            #[cfg(test)]
+            pan,
+            #[cfg(test)]
+            l_limit,
             variable_count: names.len(),
+            #[cfg(test)]
             max_stack,
             operation_count,
             performance_warnings,
             parameters,
+            jit: Arc::new(jit),
         })
     }
 }
 
+#[cfg(test)]
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
@@ -1239,6 +1267,37 @@ fn constant(name: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{hint::black_box, time::Instant};
+
+    fn assert_output_close(jit: Outputs, interpreted: Outputs) {
+        for (name, actual, expected) in [
+            ("wave", jit.wave, interpreted.wave),
+            ("pan", jit.pan, interpreted.pan),
+            ("l_limit", jit.l_limit, interpreted.l_limit),
+        ] {
+            let tolerance = 0.000_01 * (1.0 + expected.abs());
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "{name}: JIT={actual}, interpreter={expected}"
+            );
+        }
+    }
+
+    fn evaluate_legacy_with(
+        program: &Program,
+        input: &Inputs,
+        values: &mut [f32],
+        stack: &mut [f32],
+    ) -> Outputs {
+        for assignment in &program.assignments {
+            values[assignment.slot] = evaluate_code(&assignment.code, input, values, stack);
+        }
+        Outputs {
+            wave: finite_or(values[program.wave], 0.0),
+            pan: finite_or(program.pan.map_or(0.0, |slot| values[slot]), 0.0).clamp(-1.0, 1.0),
+            l_limit: finite_or(values[program.l_limit], 0.0),
+        }
+    }
 
     #[test]
     fn compiles_multiline_program_and_evaluates_assignments() {
@@ -1384,6 +1443,149 @@ mod tests {
             Compiler::new()
                 .compile("p_bad = param(2, 0, 1)\nwave = p_bad\nl_limit = 1")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn cranelift_jit_matches_the_interpreter_for_all_operations() {
+        let source = r#"
+p_shape = param(0.4, -2, 2, 0.1)
+inputs = t+l+s+freq+note+ch+bend+bend_st+mw+vol+midi_pan+mexpr+sustain+pressure+poly_pressure+program+sr+tempo+beat+bar+ppq+playing+voice+noise()+cc(74)+p_shape
+basic = (8+2-3)*0.25/2 + 7%3 + 2^3
+unary_a = sin(0.2)+cos(0.3)+tan(0.1)+exp(0.2)+sqrt(4)+abs(-3)
+unary_b = tanh(0.2)+sinh(0.1)+cosh(0.1)+cbrt(8)+ln(2)+log2(8)+log10(100)
+unary_c = floor(1.8)+ceil(1.2)+round(-1.5)+fract(-1.25)+sign(-3)+asin(0.2)+acos(0.2)+atan(0.2)
+multi = min(3,4)+max(3,4)+pow(2,3)+atan2(1,2)+mod(-7,3)+clamp(3,2,-1)+mix(2,4,0.25)
+osc = saw(110,t)+square(55,t,0.3)+triangle(27.5,t)
+wave = inputs*0.0001 + basic + unary_a + unary_b + unary_c + multi + osc
+pan = clamp(midi_pan*2-1,-1,1)
+l_limit = max(0.1, p_shape+2.5)
+"#;
+        let program = Compiler::new().compile(source).unwrap();
+        assert_eq!(program.execution_backend(), "Cranelift JIT");
+        let mut input = Inputs {
+            t: 0.123,
+            l: 0.2,
+            s: 1.7,
+            freq: 440.0,
+            note: 69.0,
+            ch: 2.0,
+            bend: -0.1,
+            bend_st: -0.2,
+            mw: 0.3,
+            vol: 0.8,
+            midi_pan: 0.7,
+            mexpr: 0.6,
+            sustain: 1.0,
+            pressure: 0.4,
+            poly_pressure: 0.5,
+            program: 3.0,
+            sr: 48_000.0,
+            tempo: 128.0,
+            beat: 2.5,
+            bar: 4.0,
+            ppq: 14.25,
+            playing: 1.0,
+            voice: 7.0,
+            rand: -0.25,
+            ..Inputs::default()
+        };
+        input.cc[74] = 0.65;
+        input.params[0] = 0.7;
+
+        assert_output_close(
+            program.evaluate(&input),
+            program.evaluate_interpreted(&input),
+        );
+    }
+
+    #[test]
+    fn cranelift_program_is_send_sync_and_sanitizes_outputs() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Program>();
+
+        let program = Compiler::new()
+            .compile("wave = 0/0\npan = 10\nl_limit = 1/0")
+            .unwrap();
+        assert_eq!(
+            program.evaluate(&Inputs::default()),
+            Outputs {
+                wave: 0.0,
+                pan: 1.0,
+                l_limit: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn repeatedly_compiles_executes_and_frees_jit_programs() {
+        for index in 0..128 {
+            let program = Compiler::new()
+                .compile(&format!(
+                    "value = sin(TAU*freq*t) + {index}\nwave = value\nl_limit = 1"
+                ))
+                .unwrap();
+            assert!(
+                program
+                    .evaluate(&Inputs {
+                        t: 0.01,
+                        freq: 220.0,
+                        ..Inputs::default()
+                    })
+                    .wave
+                    .is_finite()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release-mode throughput check"]
+    fn benchmark_cranelift_against_legacy_interpreter() {
+        let source = r#"
+p_tone = param(0.55, 0, 1, 0.01)
+p_gain = param(0.8, 0, 1, 0.01)
+fundamental = sin(TAU*freq*t)
+harmonics = 0.35*sin(TAU*freq*2*t) + 0.15*sin(TAU*freq*3*t)
+edge = 0.12*saw(freq*0.5,t)
+env = min(t*180,1)*exp(-3*l)
+wave = (fundamental + p_tone*harmonics + edge)*env*s*p_gain
+pan = 0.25*sin(TAU*0.2*t)
+l_limit = 2
+"#;
+        let program = Compiler::new().compile(source).unwrap();
+        let mut input = Inputs {
+            freq: 220.0,
+            s: 0.8,
+            sr: 48_000.0,
+            ..Inputs::default()
+        };
+        input.params[0] = 0.55;
+        input.params[1] = 0.8;
+        let iterations = 2_000_000;
+
+        let started = Instant::now();
+        let mut jit_sum = 0.0f32;
+        for index in 0..iterations {
+            input.t = black_box(index as f32 / input.sr);
+            jit_sum += black_box(program.evaluate(&input).wave);
+        }
+        let jit_time = started.elapsed();
+
+        let mut values = vec![0.0; program.variable_count];
+        let mut stack = vec![0.0; program.max_stack.max(1)];
+        let started = Instant::now();
+        let mut interpreter_sum = 0.0f32;
+        for index in 0..iterations {
+            input.t = black_box(index as f32 / input.sr);
+            interpreter_sum +=
+                black_box(evaluate_legacy_with(&program, &input, &mut values, &mut stack).wave);
+        }
+        let interpreter_time = started.elapsed();
+
+        assert!((jit_sum - interpreter_sum).abs() < 0.01);
+        eprintln!(
+            "Cranelift: {jit_time:?}, interpreter: {interpreter_time:?}, speedup: {:.2}x",
+            interpreter_time.as_secs_f64() / jit_time.as_secs_f64()
         );
     }
 }

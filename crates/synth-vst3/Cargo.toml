@@ -1,6 +1,7 @@
 [package]
 name = "synth-vst3"
 version.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
 [lib]
