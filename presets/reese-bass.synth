@@ -12,6 +12,8 @@ p.stereo_width = param(0.72, 0, 1.5, 0.01)
 p.sub_mix = param(0.28, 0, 1, 0.01)
 p.drive = param(1.8, 0.5, 8, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     f32 voice lowpass_l = 0
     f32 voice lowpass_r = 0

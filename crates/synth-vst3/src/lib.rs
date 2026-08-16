@@ -98,6 +98,32 @@ impl SynthPlugin {
         let sample_count = data.numSamples as usize;
         let left = unsafe { slice::from_raw_parts_mut(channels[0], sample_count) };
         let right = unsafe { slice::from_raw_parts_mut(channels[1], sample_count) };
+        let input_channels = if data.numInputs == 1 && !data.inputs.is_null() {
+            let input_buses = unsafe { slice::from_raw_parts(data.inputs, 1) };
+            (input_buses[0].numChannels == 2
+                && !unsafe { input_buses[0].__field0.channelBuffers32 }.is_null())
+            .then(|| unsafe { slice::from_raw_parts(input_buses[0].__field0.channelBuffers32, 2) })
+        } else {
+            None
+        };
+        if let Some(input_channels) = input_channels
+            && !input_channels[0].is_null()
+            && !input_channels[1].is_null()
+        {
+            if input_channels[0] != channels[0] {
+                left.copy_from_slice(unsafe {
+                    slice::from_raw_parts(input_channels[0], sample_count)
+                });
+            }
+            if input_channels[1] != channels[1] {
+                right.copy_from_slice(unsafe {
+                    slice::from_raw_parts(input_channels[1], sample_count)
+                });
+            }
+        } else {
+            left.fill(0.0);
+            right.fill(0.0);
+        }
         let mut state = match self.processor.try_borrow_mut() {
             Ok(state) => state,
             Err(_) => {
@@ -132,7 +158,8 @@ impl SynthPlugin {
         };
 
         let mut silent = true;
-        for sample in 0..sample_count {
+        let mut sample = 0;
+        while sample < sample_count {
             while let Some(event) = next_event.as_ref() {
                 if event.sampleOffset.max(0) as usize > sample {
                     break;
@@ -150,12 +177,34 @@ impl SynthPlugin {
                     None
                 };
             }
-            let input = state.transport;
-            let (sample_l, sample_r) = state.engine.render_sample(input);
-            left[sample] = sample_l * gain;
-            right[sample] = sample_r * gain;
-            silent &= left[sample] == 0.0 && right[sample] == 0.0;
-            state.transport.ppq += ppq_step;
+
+            let next_sample = next_event.as_ref().map_or(sample_count, |event| {
+                (event.sampleOffset.max(0) as usize).min(sample_count)
+            });
+            if next_sample == sample {
+                // Events whose offsets were already consumed above cannot form
+                // a zero-length render segment.
+                continue;
+            }
+            let segment_end = next_sample.max(sample + 1);
+            let segment_transport = state.transport;
+            state.engine.render_block_with_ppq_step(
+                &mut left[sample..segment_end],
+                &mut right[sample..segment_end],
+                segment_transport,
+                ppq_step,
+            );
+            for (sample_l, sample_r) in left[sample..segment_end]
+                .iter_mut()
+                .zip(&mut right[sample..segment_end])
+            {
+                *sample_l *= gain;
+                *sample_r *= gain;
+                silent &= *sample_l == 0.0 && *sample_r == 0.0;
+            }
+            let segment_len = (segment_end - sample) as f32;
+            state.transport.ppq += ppq_step * segment_len;
+            sample = segment_end;
         }
         buses[0].silenceFlags = if silent { 0b11 } else { 0 };
         kResultOk
@@ -188,7 +237,19 @@ impl SynthPlugin {
                 self.master_gain
                     .store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
             } else if let Some(index) = user_parameter_index(id) {
-                self.ui.set_user_parameter_normalized(index, value as f32);
+                // Apply host automation into the shared UserParameterStore using
+                // `set_from_midi` so the value is only accepted when the
+                // audio thread's block-start revision matches. This prevents
+                // racing with UI-driven changes and keeps the audio-thread
+                // revision snapshot semantics consistent (used for MIDI CC
+                // linked parameters as well).
+                // Ask the engine to apply the host-driven parameter so it can
+                // enforce the block-start revision semantics without exposing its
+                // internals to this adapter.
+                if !engine.apply_host_user_parameter(index, value as f32) {
+                    // Fallback for early-initialization paths: update UI store.
+                    self.ui.set_user_parameter_normalized(index, value as f32);
+                }
             } else if let Some((channel, controller)) = decode_midi_param(id) {
                 apply_midi_parameter(engine, channel, controller, value as f32);
             }
@@ -219,7 +280,7 @@ impl IComponentTrait for SynthPlugin {
 
     unsafe fn getBusCount(&self, media_type: MediaType, direction: BusDirection) -> i32 {
         match (media_type as MediaTypes, direction as BusDirections) {
-            (MediaTypes_::kAudio, BusDirections_::kOutput) => 1,
+            (MediaTypes_::kAudio, BusDirections_::kInput | BusDirections_::kOutput) => 1,
             (MediaTypes_::kEvent, BusDirections_::kInput) => 1,
             _ => 0,
         }
@@ -237,6 +298,15 @@ impl IComponentTrait for SynthPlugin {
         }
         let bus = unsafe { &mut *bus };
         match (media_type as MediaTypes, direction as BusDirections) {
+            (MediaTypes_::kAudio, BusDirections_::kInput) => {
+                bus.mediaType = MediaTypes_::kAudio as MediaType;
+                bus.direction = BusDirections_::kInput as BusDirection;
+                bus.channelCount = 2;
+                copy_wstring("Stereo Input", &mut bus.name);
+                bus.busType = BusTypes_::kMain as BusType;
+                bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
+                kResultOk
+            }
             (MediaTypes_::kAudio, BusDirections_::kOutput) => {
                 bus.mediaType = MediaTypes_::kAudio as MediaType;
                 bus.direction = BusDirections_::kOutput as BusDirection;
@@ -333,10 +403,13 @@ impl IAudioProcessorTrait for SynthPlugin {
         outputs: *mut SpeakerArrangement,
         num_outputs: i32,
     ) -> tresult {
-        if num_inputs != 0 || num_outputs != 1 || outputs.is_null() {
+        if !(0..=1).contains(&num_inputs) || num_outputs != 1 || outputs.is_null() {
             return kResultFalse;
         }
-        if unsafe { *outputs } == SpeakerArr::kStereo {
+        if unsafe { *outputs } != SpeakerArr::kStereo {
+            return kResultFalse;
+        }
+        if num_inputs == 0 || (!_inputs.is_null() && unsafe { *_inputs } == SpeakerArr::kStereo) {
             kResultTrue
         } else {
             kResultFalse
@@ -349,8 +422,10 @@ impl IAudioProcessorTrait for SynthPlugin {
         index: i32,
         arrangement: *mut SpeakerArrangement,
     ) -> tresult {
-        if direction as BusDirections != BusDirections_::kOutput
-            || index != 0
+        if !matches!(
+            direction as BusDirections,
+            BusDirections_::kInput | BusDirections_::kOutput
+        ) || index != 0
             || arrangement.is_null()
         {
             return kInvalidArgument;
@@ -602,6 +677,13 @@ impl IEditControllerTrait for SynthPlugin {
         if id == MASTER_GAIN_ID {
             f64::from_bits(self.master_gain.load(Ordering::Relaxed))
         } else if let Some(index) = user_parameter_index(id) {
+            // Prefer the engine's runtime value when available (effector/audio-only
+            // usage). Fall back to the UI store otherwise.
+            if let Ok(processor) = self.processor.try_borrow() {
+                if let Some(v) = processor.engine.get_user_parameter_normalized(index) {
+                    return v as f64;
+                }
+            }
             self.ui.user_parameter_normalized(index) as f64
         } else if let Some((_channel, controller)) = decode_midi_param(id) {
             midi_parameter_default(controller)
@@ -617,6 +699,19 @@ impl IEditControllerTrait for SynthPlugin {
             return kResultOk;
         }
         if let Some(index) = user_parameter_index(id) {
+            // Try to write into the audio runtime immediately when available
+            // so controller-driven changes are reflected in the audio path.
+            if let Ok(mut processor) = self.processor.try_borrow_mut() {
+                if processor
+                    .engine
+                    .set_user_parameter_immediate(index, value as f32)
+                {
+                    // Keep UI store in sync as well.
+                    self.ui.set_user_parameter_normalized(index, value as f32);
+                    return kResultOk;
+                }
+            }
+            // Fallback to updating the UI-backed store.
             self.ui.set_user_parameter_normalized(index, value as f32);
             return kResultOk;
         }
@@ -882,7 +977,7 @@ impl IPluginFactory2Trait for Factory {
         copy_cstring("Audio Module Class", &mut info.category);
         copy_cstring(PLUGIN_NAME, &mut info.name);
         info.classFlags = 0;
-        copy_cstring("Instrument|Synth", &mut info.subCategories);
+        copy_cstring("Fx|Instrument", &mut info.subCategories);
         copy_cstring(VENDOR, &mut info.vendor);
         copy_cstring(VERSION, &mut info.version);
         copy_cstring("VST 3.8.0", &mut info.sdkVersion);

@@ -6,6 +6,8 @@ p.brightness = param(0.68, 0, 1, 0.01, 74)
 p.inharmonicity = param(1.42, 1, 2.5, 0.01)
 p.space = param(0.38, 0, 1, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     hit = exciter.impulse(in.t, 2ms) * mix(0.4, 1, in.s)
     fundamental = modal(hit, in.freq, p.decay_s, 1)
@@ -15,12 +17,17 @@ fn note(in, p) -> out {
     release = exp(-7 * in.l / p.release_s)
     tone = filter.onepole.lp(fundamental + partial2 + partial3 + partial4,
         mix(1800, 13500, p.brightness), in.sr)
-    out.wave = p.gain * in.s * in.vol * in.mexpr * release * tone
-    out.pan = clamp(in.midi_pan + 0.42 * sin(in.voice * 2.7), -1, 1)
+    amp = p.gain * in.s * in.vol * in.mexpr * release * tone
+    pan = clamp(in.midi_pan + 0.42 * sin(in.voice * 2.7), -1, 1)
+    out.wave_l = amp * pan_l(pan)
+    out.wave_r = amp * pan_r(pan)
     out.l_limit = p.release_s
 }
 
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     out.wave_l = mix(in.wave_l, reverb.early(in.wave_l, 0.7), p.space)
     out.wave_r = mix(in.wave_r, reverb.early(in.wave_r, 0.76), p.space)
 }

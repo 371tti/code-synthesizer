@@ -76,7 +76,10 @@ pub struct KeyboardNoteState {
 
 /// Single-writer, lock-free audio history used by the WebView oscilloscope.
 pub struct WaveformMonitor {
-    samples: [AtomicU32; WAVEFORM_CAPACITY],
+    mix_left: [AtomicU32; WAVEFORM_CAPACITY],
+    mix_right: [AtomicU32; WAVEFORM_CAPACITY],
+    output_left: [AtomicU32; WAVEFORM_CAPACITY],
+    output_right: [AtomicU32; WAVEFORM_CAPACITY],
     write_index: AtomicUsize,
     active_voices: AtomicUsize,
     sample_rate: AtomicU32,
@@ -87,7 +90,10 @@ pub struct WaveformMonitor {
 impl WaveformMonitor {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            samples: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            mix_left: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            mix_right: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            output_left: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            output_right: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             write_index: AtomicUsize::new(0),
             active_voices: AtomicUsize::new(0),
             sample_rate: AtomicU32::new(sanitize_sample_rate(sample_rate).to_bits()),
@@ -110,16 +116,24 @@ impl WaveformMonitor {
         self.active_voices.load(Ordering::Relaxed)
     }
 
-    pub fn read_recent(&self, length: usize) -> Vec<f32> {
+    pub fn read_recent(&self, output: bool, length: usize) -> (Vec<f32>, Vec<f32>) {
         let length = length.clamp(1, WAVEFORM_CAPACITY);
         let end = self.write_index.load(Ordering::Acquire);
         let start = end.saturating_sub(length);
-        (start..end)
-            .map(|index| {
-                let slot = index % WAVEFORM_CAPACITY;
-                f32::from_bits(self.samples[slot].load(Ordering::Relaxed))
-            })
-            .collect()
+        let (left, right) = if output {
+            (&self.output_left, &self.output_right)
+        } else {
+            (&self.mix_left, &self.mix_right)
+        };
+        let read = |samples: &[AtomicU32; WAVEFORM_CAPACITY]| {
+            (start..end)
+                .map(|index| {
+                    let slot = index % WAVEFORM_CAPACITY;
+                    f32::from_bits(samples[slot].load(Ordering::Relaxed))
+                })
+                .collect()
+        };
+        (read(left), read(right))
     }
 
     pub fn keyboard_note_states(&self) -> Vec<KeyboardNoteState> {
@@ -157,10 +171,20 @@ impl WaveformMonitor {
         }
     }
 
-    pub(crate) fn push(&self, sample: f32, active_voices: usize) {
+    pub(crate) fn push(
+        &self,
+        mix_left: f32,
+        mix_right: f32,
+        output_left: f32,
+        output_right: f32,
+        active_voices: usize,
+    ) {
         let index = self.write_index.load(Ordering::Relaxed);
-        self.samples[index % WAVEFORM_CAPACITY]
-            .store(finite_or_zero(sample).to_bits(), Ordering::Relaxed);
+        let slot = index % WAVEFORM_CAPACITY;
+        self.mix_left[slot].store(finite_or_zero(mix_left).to_bits(), Ordering::Relaxed);
+        self.mix_right[slot].store(finite_or_zero(mix_right).to_bits(), Ordering::Relaxed);
+        self.output_left[slot].store(finite_or_zero(output_left).to_bits(), Ordering::Relaxed);
+        self.output_right[slot].store(finite_or_zero(output_right).to_bits(), Ordering::Relaxed);
         self.active_voices.store(active_voices, Ordering::Relaxed);
         self.write_index
             .store(index.wrapping_add(1), Ordering::Release);

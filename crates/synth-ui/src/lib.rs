@@ -308,11 +308,21 @@ pub struct ControlLayout {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaveformPreview {
-    pub samples: Vec<f32>,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub tap: WaveformTap,
     pub frequency: f32,
     pub sample_rate: f32,
     pub active_voices: usize,
     pub live: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaveformTap {
+    #[default]
+    MixInput,
+    Output,
 }
 
 struct UiState {
@@ -328,6 +338,7 @@ struct UiState {
     preview_velocity: f32,
     controls: Vec<ControlLayout>,
     mode: UiMode,
+    waveform_tap: WaveformTap,
 }
 
 pub struct UiModel {
@@ -448,6 +459,7 @@ impl UiModel {
                 preview_velocity: 0.9,
                 controls,
                 mode: UiMode::Editor,
+                waveform_tap: WaveformTap::MixInput,
             }),
             exchange: Arc::new(ProgramExchange::new(8)),
             midi: crossbeam_queue::ArrayQueue::new(128),
@@ -649,16 +661,25 @@ impl UiModel {
         let sample_rate = self.waveform.sample_rate();
         let frequency = MidiNote::new(state.preview_note).frequency();
         let length = length.clamp(64, 2_048);
+        let tap = state.waveform_tap;
         if active_voices > 0 {
+            let (left, right) = self
+                .waveform
+                .read_recent(matches!(tap, WaveformTap::Output), length);
             return WaveformPreview {
-                samples: self.waveform.read_recent(length),
+                left,
+                right,
+                tap,
                 frequency,
                 sample_rate,
                 active_voices,
                 live: true,
             };
         }
-        let mut samples = Vec::with_capacity(length);
+        let mut mix_left = Vec::with_capacity(length);
+        let mut mix_right = Vec::with_capacity(length);
+        let mut output_left = Vec::with_capacity(length);
+        let mut output_right = Vec::with_capacity(length);
         let preview_key = (
             state.preview_note,
             state.preview_velocity.to_bits(),
@@ -687,26 +708,50 @@ impl UiModel {
             let absolute_index = sample_start.wrapping_add(index as u64);
             input.t = absolute_index as f32 / sample_rate;
             input.rand = preview_random(absolute_index as u32);
-            let note = state.preview_instance.evaluate_note(&input, 0, 0);
+            let note = state.preview_instance.evaluate_note(&input, 0);
             state.preview_instance.commit_voice(0);
-            state.preview_instance.commit_note(0);
-            let (left, right) = match state.program.note_output_mode() {
+            let (left, right) = match state.program.note_output_layout() {
                 NoteOutputMode::Mono => {
-                    let left = note.wave * ((1.0 - note.pan) * 0.5).sqrt();
-                    let right = note.wave * ((1.0 + note.pan) * 0.5).sqrt();
-                    (left, right)
+                    let angle = (note.pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+                    (note.wave * angle.cos(), note.wave * angle.sin())
                 }
                 NoteOutputMode::Stereo => (note.wave_l, note.wave_r),
             };
-            input.wave_l = left;
-            input.wave_r = right;
+            mix_left.push(left);
+            mix_right.push(right);
+            match state.program.effect_input_layout() {
+                synth_dsl::ChannelLayout::Mono => input.wave = (left + right) * 0.5,
+                synth_dsl::ChannelLayout::Stereo => {
+                    input.wave_l = left;
+                    input.wave_r = right;
+                }
+            }
             let filtered = state.preview_instance.evaluate_filter(&input);
             state.preview_instance.commit_global();
-            samples.push((filtered.wave_l + filtered.wave_r) * 0.5);
+            match state.program.effect_output_layout() {
+                synth_dsl::ChannelLayout::Mono => {
+                    output_left.push(filtered.wave);
+                    output_right.push(filtered.wave);
+                }
+                synth_dsl::ChannelLayout::Stereo => {
+                    output_left.push(filtered.wave_l);
+                    output_right.push(filtered.wave_r);
+                }
+            }
         }
         state.preview_sample_index = sample_start.wrapping_add(length as u64);
         WaveformPreview {
-            samples,
+            left: if matches!(tap, WaveformTap::MixInput) {
+                mix_left
+            } else {
+                output_left
+            },
+            right: if matches!(tap, WaveformTap::MixInput) {
+                mix_right
+            } else {
+                output_right
+            },
+            tap,
             frequency,
             sample_rate,
             active_voices,
@@ -802,6 +847,12 @@ impl UiModel {
             UiCommand::SetMode { mode } => {
                 self.state.lock().map_err(|_| "UI state poisoned")?.mode = mode;
             }
+            UiCommand::SetWaveformTap { tap } => {
+                self.state
+                    .lock()
+                    .map_err(|_| "UI state poisoned")?
+                    .waveform_tap = tap;
+            }
             UiCommand::NoteOn { note, velocity } => self.push_midi(MidiEvent::NoteOn {
                 channel: 0,
                 note: MidiNote::new(note),
@@ -855,6 +906,9 @@ enum UiCommand {
     },
     SetMode {
         mode: UiMode,
+    },
+    SetWaveformTap {
+        tap: WaveformTap,
     },
     NoteOn {
         note: u8,
@@ -1199,17 +1253,18 @@ mod tests {
     #[test]
     fn publishes_valid_program_and_preserves_last_valid_on_error() {
         let model = UiModel::new(DEFAULT_SOURCE);
-        let valid = "fn note(in, p) -> out {\nout.wave_l = out.wave_r = 0.25\nout.l_limit = 1\n}";
+        let valid = "note.out.layout = stereo\nfn note(in, p) -> out {\nout.wave_l = out.wave_r = 0.25\nout.l_limit = 1\n}";
         assert!(model.set_expression(valid.into()).ok);
         assert!(
             !model
                 .set_expression(
-                    "fn note(in, p) -> out {\nout.wave = unknown\nout.l_limit = 1\n}".into()
+                    "note.out.layout = mono\nfn note(in, p) -> out {\nout.wave = unknown\nout.l_limit = 1\n}"
+                        .into()
                 )
                 .ok
         );
         assert_eq!(model.source(), valid);
-        assert_eq!(model.waveform_preview(64).samples, vec![0.25; 64]);
+        assert_eq!(model.waveform_preview(64).left, vec![0.25; 64]);
     }
 
     #[test]
@@ -1247,7 +1302,7 @@ mod tests {
 
     #[test]
     fn exposes_parameters_and_persists_play_layout() {
-        let source = "p.tone = param(0.25, 0, 2, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
+        let source = "note.out.layout = mono\np.tone = param(0.25, 0, 2, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
         let model = UiModel::new(source);
         let snapshot = model.snapshot();
         assert_eq!(snapshot.parameters.len(), 1);
@@ -1344,7 +1399,7 @@ mod tests {
 
     #[test]
     fn loading_a_custom_preset_restores_saved_values_and_layout() {
-        let source = "p.tone = param(0.75, 0, 1, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
+        let source = "note.out.layout = mono\np.tone = param(0.75, 0, 1, 0.01)\nfn note(in, p) -> out {\nout.wave = p.tone\nout.l_limit = 1\n}";
         let model = UiModel::new(DEFAULT_SOURCE);
         let values = vec![CustomParameterValue {
             name: "p.tone".into(),
@@ -1377,7 +1432,7 @@ mod tests {
     fn compile_status_includes_actionable_hint() {
         let model = UiModel::new(DEFAULT_SOURCE);
         let status = model.set_expression(
-            "fn note(in, p) -> out {\nout.wave = in.frqe\nout.l_limit = 1\n}".into(),
+            "note.out.layout = mono\nfn note(in, p) -> out {\nout.wave = in.frqe\nout.l_limit = 1\n}".into(),
         );
         assert!(!status.ok);
         assert!(

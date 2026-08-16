@@ -8,6 +8,8 @@ p.delay_mix = param(0.32, 0, 0.85, 0.01)
 p.feedback = param(0.42, 0, 0.88, 0.01)
 p.space = param(0.7, 0, 1, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-7 * in.l / p.release_s)
@@ -20,7 +22,10 @@ fn note(in, p) -> out {
     out.l_limit = p.release_s
 }
 
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     echo_l = delay.feedback(in.wave_l, 310ms, p.feedback)
     echo_r = delay.feedback(in.wave_r, 457ms, p.feedback)
     taps_l = delay.multitap(in.wave_l, 93ms, 181ms, 367ms)

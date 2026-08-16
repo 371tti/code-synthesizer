@@ -4,12 +4,12 @@ use super::{
     AssignmentTarget, EntryOutputs, EntryPlan, InputId, Inputs, Op, Outputs, ValueRef,
     dsp::{jit_biquad_coefficient, jit_standard},
     state::{
-        EvalContext, jit_dsp_process, jit_ring_duration, jit_ring_len, jit_ring_peek,
-        jit_state_read, jit_state_write,
+        EvalContext, jit_commit_global, jit_commit_voice, jit_dsp_process, jit_ring_duration,
+        jit_ring_len, jit_ring_peek, jit_state_read, jit_state_write,
     },
 };
 use cranelift::{
-    codegen::ir::{FuncRef, MemFlagsData, UserFuncName},
+    codegen::ir::{BlockArg, FuncRef, MemFlagsData, UserFuncName},
     prelude::*,
 };
 use cranelift_jit::{JITBuilder, JITModule};
@@ -17,10 +17,13 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 use std::{fmt, mem, sync::Mutex};
 
 type EntryFn = unsafe extern "C" fn(*const Inputs, *mut Outputs, *mut EvalContext);
+type BlockEntryFn = unsafe extern "C" fn(*const Inputs, *mut Outputs, *mut EvalContext, usize);
 
 pub(super) struct JitProgram {
     note: EntryFn,
+    note_block: BlockEntryFn,
     filter: Option<EntryFn>,
+    filter_block: Option<BlockEntryFn>,
     module: Mutex<Option<JITModule>>,
 }
 
@@ -58,18 +61,45 @@ impl JitProgram {
         let filter_id = filter
             .map(|entry| define_entry(&mut module, &helper_ids, entry, "code_synth_filter", 1))
             .transpose()?;
+        let note_block_id = define_block_entry(
+            &mut module,
+            &helper_ids,
+            note_id,
+            "code_synth_note_block",
+            2,
+            Helper::CommitVoice,
+        )?;
+        let filter_block_id = filter_id
+            .map(|id| {
+                define_block_entry(
+                    &mut module,
+                    &helper_ids,
+                    id,
+                    "code_synth_filter_block",
+                    3,
+                    Helper::CommitGlobal,
+                )
+            })
+            .transpose()?;
         module
             .finalize_definitions()
             .map_err(|error| error.to_string())?;
         let note_code = module.get_finalized_function(note_id);
         let filter_code = filter_id.map(|id| module.get_finalized_function(id));
+        let note_block_code = module.get_finalized_function(note_block_id);
+        let filter_block_code = filter_block_id.map(|id| module.get_finalized_function(id));
         // SAFETY: define_entry emits exactly the EntryFn native signature.
         let note = unsafe { mem::transmute::<*const u8, EntryFn>(note_code) };
         // SAFETY: same signature is used for the optional filter entry.
         let filter = filter_code.map(|code| unsafe { mem::transmute::<*const u8, EntryFn>(code) });
+        let note_block = unsafe { mem::transmute::<*const u8, BlockEntryFn>(note_block_code) };
+        let filter_block = filter_block_code
+            .map(|code| unsafe { mem::transmute::<*const u8, BlockEntryFn>(code) });
         Ok(Self {
             note,
+            note_block,
             filter,
+            filter_block,
             module: Mutex::new(Some(module)),
         })
     }
@@ -90,6 +120,24 @@ impl JitProgram {
             unsafe { filter(input, &mut output, context) };
         }
         output
+    }
+    pub(super) fn evaluate_note_block(
+        &self,
+        inputs: &[Inputs],
+        outputs: &mut [Outputs],
+        context: &mut EvalContext,
+    ) {
+        unsafe { (self.note_block)(inputs.as_ptr(), outputs.as_mut_ptr(), context, inputs.len()) };
+    }
+    pub(super) fn evaluate_filter_block(
+        &self,
+        inputs: &[Inputs],
+        outputs: &mut [Outputs],
+        context: &mut EvalContext,
+    ) {
+        if let Some(filter) = self.filter_block {
+            unsafe { filter(inputs.as_ptr(), outputs.as_mut_ptr(), context, inputs.len()) };
+        }
     }
 }
 
@@ -173,6 +221,83 @@ fn define_entry(
     Ok(id)
 }
 
+fn define_block_entry(
+    module: &mut JITModule,
+    helpers: &[cranelift_module::FuncId],
+    scalar_id: cranelift_module::FuncId,
+    name: &str,
+    namespace: u32,
+    commit: Helper,
+) -> Result<cranelift_module::FuncId, String> {
+    let pointer = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    for _ in 0..4 {
+        signature.params.push(AbiParam::new(pointer));
+    }
+    let id = module
+        .declare_function(name, Linkage::Local, &signature)
+        .map_err(|e| e.to_string())?;
+    let mut context = module.make_context();
+    context.func.signature = signature;
+    context.func.name = UserFuncName::user(namespace, id.as_u32());
+    let mut fbctx = FunctionBuilderContext::new();
+    {
+        let mut b = FunctionBuilder::new(&mut context.func, &mut fbctx);
+        let entry = b.create_block();
+        let loop_block = b.create_block();
+        let done = b.create_block();
+        b.switch_to_block(entry);
+        b.append_block_params_for_function_params(entry);
+        let p = b.block_params(entry);
+        let input = p[0];
+        let output = p[1];
+        let runtime = p[2];
+        let count = p[3];
+        let scalar = module.declare_func_in_func(scalar_id, b.func);
+        let commit_ref = module.declare_func_in_func(helpers[commit as usize], b.func);
+        let zero = b.ins().iconst(pointer, 0);
+        let active = b.ins().icmp(IntCC::NotEqual, count, zero);
+        let initial = [
+            BlockArg::Value(input),
+            BlockArg::Value(output),
+            BlockArg::Value(runtime),
+            BlockArg::Value(count),
+        ];
+        b.ins().brif(active, loop_block, &initial, done, &[]);
+        b.switch_to_block(loop_block);
+        b.append_block_param(loop_block, pointer);
+        b.append_block_param(loop_block, pointer);
+        b.append_block_param(loop_block, pointer);
+        b.append_block_param(loop_block, pointer);
+        let q = b.block_params(loop_block);
+        let (qi, qo, qr, qc) = (q[0], q[1], q[2], q[3]);
+        b.ins().call(scalar, &[qi, qo, qr]);
+        b.ins().call(commit_ref, &[qr]);
+        let ni = b.ins().iadd_imm_u(qi, std::mem::size_of::<Inputs>() as i64);
+        let no = b
+            .ins()
+            .iadd_imm_u(qo, std::mem::size_of::<Outputs>() as i64);
+        let nc = b.ins().iadd_imm_s(qc, -1);
+        let more = b.ins().icmp_imm_u(IntCC::NotEqual, nc, 0);
+        let next = [
+            BlockArg::Value(ni),
+            BlockArg::Value(no),
+            BlockArg::Value(qr),
+            BlockArg::Value(nc),
+        ];
+        b.ins().brif(more, loop_block, &next, done, &[]);
+        b.switch_to_block(done);
+        b.ins().return_(&[]);
+        b.seal_all_blocks();
+        b.finalize(module.target_config());
+    }
+    module
+        .define_function(id, &mut context)
+        .map_err(|e| e.to_string())?;
+    module.clear_context(&mut context);
+    Ok(id)
+}
+
 fn store_outputs(
     builder: &mut FunctionBuilder<'_>,
     helpers: &[FuncRef],
@@ -192,14 +317,12 @@ fn store_outputs(
     match outputs {
         EntryOutputs::NoteMono { wave, pan, l_limit } => {
             let wave = finite(builder, variable(variables, wave)?);
-            let pan = pan
-                .map(|slot| variable(variables, slot))
-                .transpose()?
-                .unwrap_or_else(|| f32_constant(builder, 0.0));
-            let pan = call_value(builder, helpers, Helper::Pan, &[pan]);
             let limit = finite(builder, variable(variables, l_limit)?);
             store(builder, mem::offset_of!(Outputs, wave), wave)?;
-            store(builder, mem::offset_of!(Outputs, pan), pan)?;
+            if let Some(pan) = pan {
+                let pan = finite(builder, variable(variables, pan)?);
+                store(builder, mem::offset_of!(Outputs, pan), pan)?;
+            }
             store(builder, mem::offset_of!(Outputs, l_limit), limit)?;
         }
         EntryOutputs::NoteStereo {
@@ -214,7 +337,11 @@ fn store_outputs(
             store(builder, mem::offset_of!(Outputs, wave_r), right)?;
             store(builder, mem::offset_of!(Outputs, l_limit), limit)?;
         }
-        EntryOutputs::Filter { wave_l, wave_r } => {
+        EntryOutputs::FilterMono { wave } => {
+            let wave = finite(builder, variable(variables, wave)?);
+            store(builder, mem::offset_of!(Outputs, wave), wave)?;
+        }
+        EntryOutputs::FilterStereo { wave_l, wave_r } => {
             let left = finite(builder, variable(variables, wave_l)?);
             let right = finite(builder, variable(variables, wave_r)?);
             store(builder, mem::offset_of!(Outputs, wave_l), left)?;
@@ -573,6 +700,7 @@ fn load_input(
         InputId::Playing => mem::offset_of!(Inputs, playing),
         InputId::Voice => mem::offset_of!(Inputs, voice),
         InputId::Rand => mem::offset_of!(Inputs, rand),
+        InputId::Wave => mem::offset_of!(Inputs, wave),
         InputId::WaveL => mem::offset_of!(Inputs, wave_l),
         InputId::WaveR => mem::offset_of!(Inputs, wave_r),
     };
@@ -627,6 +755,8 @@ enum Helper {
     Pan,
     StateRead,
     StateWrite,
+    CommitVoice,
+    CommitGlobal,
     Standard,
     BiquadCoefficient,
     Dsp,
@@ -679,6 +809,8 @@ impl Helper {
         Self::Pan,
         Self::StateRead,
         Self::StateWrite,
+        Self::CommitVoice,
+        Self::CommitGlobal,
         Self::Standard,
         Self::BiquadCoefficient,
         Self::Dsp,
@@ -731,6 +863,8 @@ impl Helper {
             Self::Pan => "cs_pan",
             Self::StateRead => "cs_state_read",
             Self::StateWrite => "cs_state_write",
+            Self::CommitVoice => "cs_commit_voice",
+            Self::CommitGlobal => "cs_commit_global",
             Self::Standard => "cs_standard",
             Self::BiquadCoefficient => "cs_biquad_coefficient",
             Self::Dsp => "cs_dsp",
@@ -784,6 +918,8 @@ impl Helper {
             Self::Pan => h_pan as _,
             Self::StateRead => jit_state_read as _,
             Self::StateWrite => jit_state_write as _,
+            Self::CommitVoice => jit_commit_voice as _,
+            Self::CommitGlobal => jit_commit_global as _,
             Self::Standard => jit_standard as _,
             Self::BiquadCoefficient => jit_biquad_coefficient as _,
             Self::Dsp => jit_dsp_process as _,
@@ -833,6 +969,10 @@ impl Helper {
                 signature.params.push(AbiParam::new(pointer));
                 signature.params.push(AbiParam::new(types::I32));
                 signature.params.push(AbiParam::new(types::F32));
+                return signature;
+            }
+            Self::CommitVoice | Self::CommitGlobal => {
+                signature.params.push(AbiParam::new(pointer));
                 return signature;
             }
             Self::Cc => {

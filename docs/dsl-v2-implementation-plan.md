@@ -7,7 +7,7 @@ Source: `Code Synthesizer DSL — Core Language Specification`（2026-08-15 添�
 
 ## Goals
 
-- `fn note(in, p) -> out` と省略可能な `fn filter(in, p) -> out` を正式なEntry Pointにする。
+- `fn note(in, p) -> out` と省略可能な `fn effect(in, p) -> out` を正式なEntry Pointにする。
 - qualified identifier、ユーザー定義関数、比較演算、時間/SI suffix、連鎖代入を追加する。
 - mono / true stereo Voiceと、Voice mix後のstereo filterを同じDSLで記述できるようにする。
 - `voice` / `note` / `global` の永続scalar storageを追加する。
@@ -25,18 +25,18 @@ Source: `Code Synthesizer DSL — Core Language Specification`（2026-08-15 添�
 
 ## Current Baseline and Gap
 
-| Area | Current implementation | DSL v2 target |
-| --- | --- | --- |
-| Program structure | file全体が上から並ぶ代入列 | 複数の `fn`、`note` / `filter` Entry Point |
-| Names | ASCII identifierと`p_*` | 任意段数のqualified identifier |
-| Functions | 固定built-inのみ | user function、bundle形式の`in.*` / `out.*` |
-| Outputs | mono `wave` + `pan` + `l_limit` | monoまたはtrue stereo、mix後filter |
-| State | sample内temporaryのみ | `voice` / `note` / `global` persistent state |
-| Delay memory | なし | transactional fixed-size RingBuf |
-| Literals | plain `f32` | `s/ms/us`、`k/m/u/g` suffix |
-| Operators | arithmetic | arithmetic + comparison + chain assignment |
-| Runtime | Voiceごとに1個のJIT関数を直接実行 | `note` JIT + optional `filter` JIT + state transaction |
-| UI tooling | regex中心のsingle-scope補完 | function scope、qualified name、storage、entry別補完 |
+| Area              | Current implementation            | DSL v2 target                                          |
+| ----------------- | --------------------------------- | ------------------------------------------------------ |
+| Program structure | file全体が上から並ぶ代入列        | 複数の `fn`、`note` / `filter` Entry Point             |
+| Names             | ASCII identifierと`p_*`           | 任意段数のqualified identifier                         |
+| Functions         | 固定built-inのみ                  | user function、bundle形式の`in.*` / `out.*`            |
+| Outputs           | mono `wave` + `pan` + `l_limit`   | monoまたはtrue stereo、mix後filter                     |
+| State             | sample内temporaryのみ             | `voice` / `note` / `global` persistent state           |
+| Delay memory      | なし                              | transactional fixed-size RingBuf                       |
+| Literals          | plain `f32`                       | `s/ms/us`、`k/m/u/g` suffix                            |
+| Operators         | arithmetic                        | arithmetic + comparison + chain assignment             |
+| Runtime           | Voiceごとに1個のJIT関数を直接実行 | `note` JIT + optional `filter` JIT + state transaction |
+| UI tooling        | regex中心のsingle-scope補完       | function scope、qualified name、storage、entry別補完   |
 
 現在のstack IRはstatelessな単一Entry Pointを前提としている。v2ではfunction boundary、bundle、storage side effect、2つのEntry Pointを表現する必要があるため、既存IRへ継ぎ足すのではなく、frontendをAST → semantic HIR → Cranelift loweringの3段に分ける。
 
@@ -177,13 +177,12 @@ Oscillatorの `square` / `pulse` arityは[D-14]で確定する。`noise()` は`n
 
 ### `note`
 
-ちょうど1個必要。出力modeはcompile時に確定する。
+ちょうど1個必要。`note.out.layout = mono|stereo` でnote出力を明示し、filterを使う場合は `effect.in.layout` / `effect.out.layout` を個別に指定する。
 
 Mono mode:
 
 ```text
 out.wave       # required
-out.pan        # optional, default 0, clamp -1..1
 out.l_limit    # required, seconds
 ```
 
@@ -195,9 +194,8 @@ out.wave_r     # required
 out.l_limit    # required, seconds
 ```
 
-- `out.wave` と `out.wave_l/out.wave_r` の混在はerror。
-- true stereo modeの `out.pan` はerror。左右信号をそのままmixする。
-- mono modeのみengineがequal-power panを適用する。
+- mono noteは `out.wave`、任意の `out.pan`、`out.l_limit` を出力する。
+- stereo noteは `out.wave_l/out.wave_r` と `out.l_limit` を出力し、`out.pan` はerror。
 - v2でMIDI volume/expression/panをengineが暗黙適用するかは[D-02]で決める。
 - `l_limit` はnon-finiteなら0、負値はVoice retirement判定時に0として扱う。
 
@@ -205,12 +203,7 @@ out.l_limit    # required, seconds
 
 0個または1個。存在する場合は次を必須にする。
 
-```text
-in.wave_l
-in.wave_r
-out.wave_l
-out.wave_r
-```
+`effect.in.layout = mono`では `in.wave`、stereoでは `in.wave_l` / `in.wave_r` を使用する。effect出力も `effect.out.layout` に従う。
 
 Voice固有入力を参照するとsemantic errorにする。filter未定義ならmix結果をそのまま出力する。filter出力もnon-finiteを0へsanitizeする。
 
@@ -263,7 +256,7 @@ source qualified name
 ring capacity specification
 ```
 
-scalar block、Voice slot、Note slot、Global block、RingBuf backing memoryはProgramのaudio instanceを作る非RT threadで確保する。JITは固定offsetまたはruntime descriptor経由で直接load/storeする。
+scalar block、Voice slot、Global block、RingBuf backing memoryはProgramのaudio instanceを作る非RT threadで確保する。JITは固定offsetまたはruntime descriptor経由で直接load/storeする。
 
 DSL複雑度、storage数、RingBuf容量には言語上の固定上限を設けず、推定memoryとCPU負荷はWarningにする。ただし実memoryのsize overflowやOS allocation failureは、安全に実行できないためprepare errorとして報告する。
 
@@ -275,8 +268,8 @@ RingBufは固定容量array、cursor、sample内pending writeを持つ。生成�
 - writeはpending値を置き換え、最後のwriteだけ残す。
 - write後のreadもcommit前のfront値を返す。
 - transaction境界はfunction callではなくplugin sample全体。
-- Voice-domain RingBufは各Voiceの`note`終了後、Note-domainは全Voice評価後、Global-domainはoptional filter終了後にcommitする。
-- 複数Voiceが共有domainへwriteする場合の順序とlast-writer規則は[D-07]で確定する。
+- Voice-domain RingBufは各Voiceのblock kernel内でsampleごと、Global-domainはfilter block kernel内でsampleごとにcommitする。
+- Voice間に共有mutable storageはなく、Global storageへwriteできるのはmain threadで実行するfilterだけとする。
 - readだけ、writeだけの場合のcursor挙動は[D-08]で確定する。
 
 JITはread時にfrontをloadし、write時にpending slotとwrite flagを更新するだけにする。commitはdomainごとのtouched RingBufだけを固定loopで処理し、allocation/lockを行わない。
@@ -305,45 +298,38 @@ test-only reference evaluatorをtyped HIRに対して残し、全演算・state 
 概念上のABIは次とする。実際には `#[repr(C)]` struct pointerを使用する。
 
 ```text
-note(
-  NoteInputs*,
-  NoteOutputs*,
-  RuntimeState*,
+note_block(
+  NoteInputs[frame_count],
+  NoteOutputs[frame_count],
+  VoiceRuntimeState*,
   voice_slot,
-  note_slot
+  frame_count
 )
 
-filter(
-  FilterInputs*,
-  FilterOutputs*,
-  RuntimeState*
+filter_block(
+  FilterInputs[frame_count],
+  FilterOutputs[frame_count],
+  GlobalRuntimeState*,
+  frame_count
 )
 ```
 
 user functionはEntryへinlineされるため公開native ABIを持たない。JIT executable memoryは現在の `Arc<JitProgram>` 所有と `JITModule::free_memory()` を維持し、最後の参照が非RT threadで破棄される。
 
-### One-sample schedule
+### Block schedule
 
 ```text
-begin Global RingBuf transaction
-begin active Note-domain transactions
-
-for active Voice in deterministic order:
-    begin Voice transaction
-    note(...)
-    mono pan conversion or true-stereo accumulation
-    commit Voice RingBuf
-
-mix complete
-optional filter(...)
-
-commit active Note-domain RingBuf
-commit Global RingBuf
-sanitize output
-update waveform monitor
+MIDI offsetでevent-free segment化
+最大block長でchunk化
+各Voiceを voice_slot % worker_count へ固定割当
+各workerが担当Voiceのnote_blockをvoice-major実行
+worker-local mixをworker番号順にreduce
+main threadでfilter_blockを実行
+sampleごとにVoice/Global RingBufをcommit
+sanitizeしてoutput/waveformへ反映
 ```
 
-shared scalar storageは即時writeなので、後続Voice/filterは更新値を読む。決定的なVoice順は[D-07]で確定する。
+`note`はVoice-local stateだけ、`filter`はGlobal stateだけへアクセスする。Voice間の評価順はobservableではないが、各Voice内部とfilter内部のsample順は維持する。
 
 ### Sample rate
 
@@ -363,8 +349,8 @@ UI waveform previewはaudio instanceのstateを共有せず、専用のPreview i
 
 ```text
 legacy wave       -> out.wave = legacy.wave * in.vol * in.mexpr
-legacy pan        -> out.pan = clamp(legacy.pan + in.midi_pan, -1, 1)
-missing legacy pan-> out.pan = in.midi_pan
+legacy pan        -> stereo移行時にpan_l()/pan_r()で左右波形へ反映
+missing legacy pan-> monoは中央（左右同値）、stereoはDSLで明示
 legacy l_limit    -> out.l_limit
 ```
 
@@ -434,9 +420,9 @@ Exit criteria: mono、true stereo、filterがVST render pathとpreviewの両方�
 
 ### Phase 5 — Persistent scalar storage
 
-- StateSchema、Global/Voice/Note state slotを実装する。
+- StateSchema、Global/Voice state slotを実装する。
 - state memoryを非RT threadでprepareし、ProgramExchangeでblock境界交換する。
-- initializer、read/write、domain restriction、Note-domain lifecycleを実装する。
+- initializer、read/write、entrypointごとのdomain restrictionを実装する。
 - 64 Voice、多重発音、Voice steal、sustain、all-sound-off testを追加する。
 
 Exit criteria: Audio callback allocation/lockなしでdomain isolation testが通る。
@@ -554,15 +540,16 @@ crates/synth-core/src/
 - [ ] **A（推奨）**: storageはcall-siteごとに独立させる。同じstateful functionを2箇所から呼べば2 instanceになる。
 - [x] B: function declarationごとに1 instanceとし、すべてのcall siteで共有する。
 
-### [D-06] Note-domain lifecycle
+### [D-06] Note-domain lifecycle（後続設計で廃止）
 
-- [x] **A（推奨）**: `(ch,note)`で共有し、最後のVoiceがretireした時点で破棄。release中の同音retriggerは旧Voiceと共有する。
+- [ ] A: `(ch,note)`で共有し、最後のVoiceがretireした時点で破棄。release中の同音retriggerは旧Voiceと共有する。
 - [ ] B: Note On generationごとに別domainを作り、同じ `(ch,note)` の重複発音でも共有しない。
+- [x] **C（確定）**: Note domain自体を廃止し、`note()`のpersistent stateはすべてVoice slotへ所属させる。
 
 ### [D-07] Shared state ordering
 
-- [x] **A（推奨）**: Voice slot昇順で決定的に実行。scalarは即時、RingBufはplugin sample全体でtransactional。共有writeは最後のVoice/filterが勝つ。
-- [ ] B: note call treeからGlobalへのwriteを禁止する。Note-domain writeはVoice slot昇順・last writer wins、Global writeはfilterだけに制限する。
+- [ ] A: Voice slot昇順で決定的に実行。scalarは即時、RingBufはplugin sample全体でtransactional。共有writeは最後のVoice/filterが勝つ。
+- [x] **B（確定）**: note call treeからGlobalへのaccessを禁止する。Voice間の共有mutable stateをなくし、Global writeはfilterだけに制限する。
 
 ### [D-08] RingBuf read-only / write-only commit
 
@@ -585,7 +572,7 @@ crates/synth-core/src/
 ### [D-11] Persistent DSP state in VST3 project state
 
 - [x] **A（推奨）**: runtime scalar/RingBufは保存せず、source/parameter/layoutのみ保存する。load時はinitializer/zeroから開始する。
-- [ ] B: Global scalarだけ保存し、Voice/Note/RingBufは保存しない。
+- [ ] B: Global scalarだけ保存し、Voice/RingBufは保存しない。
 - [ ] C: Global RingBufを含めて保存し、delay/reverb tailも復元する。
 
 ### [D-12] Channel-dependent MIDI input in `filter`
@@ -616,15 +603,15 @@ crates/synth-core/src/
 
 - lexer/parser、semantic HIR、Cranelift note/filter entry、全built-inを実装した。
 - mutable local、qualified bundle call、forward reference、program全体のrecursion検出を実装した。
-- Voice/Note/Global scalar、transactional RingBuf、sample-rate prepare、完全一致hot reload migrationを実装した。
-- true stereo mix、post-mix filter、Note-domain lifecycle、deterministic Voice順をSynthEngineへ統合した。
+- Voice/Global scalar、transactional RingBuf、sample-rate prepare、完全一致hot reload migrationを実装した。
+- voice-affine native block worker、true stereo mix、post-mix filter、Voice lifecycleをSynthEngineへ統合した。
 - `p.name = param(default, min, max, step, cc_link?)`、software優先のCC link、VST/UI表示を統合した。
 - 全factory preset、Parameter Guide、README、Editor tokenizer/completion/snippetをnative v2へ移行した。
 - workspace test、Clippy `-D warnings`、UI production buildで検証した。
 
 - Decisionsで選択されたsemanticがcompiler、runtime、tests、READMEで一致している。
 - 添付の完全例が変更なし、または選択事項に基づく最小変更だけでcompile/renderできる。
-- note mono、note true stereo、post-mix filter、3 storage domain、RingBufがJITで動作する。
+- note mono、note true stereo、post-mix filter、Voice/Global storage domain、RingBufがblock JITで動作する。
 - 全factory preset、旧project state、Editor toolingが選択された互換方針どおり動く。
 - Audio callbackでallocation、lock、parse、JIT compile、program/state deallocationが発生しない。
 - JIT/reference differential tests、workspace tests、clippy、UI build、release VST3 bundleが成功する。

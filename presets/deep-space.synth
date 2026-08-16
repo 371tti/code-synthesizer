@@ -8,6 +8,8 @@ p.cutoff_hz = param(1800, 80, 12000, 1, 74)
 p.space = param(0.82, 0, 1, 0.01)
 p.width = param(1.35, 0, 1.6, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-6 * in.l / p.release_s)
@@ -16,12 +18,17 @@ fn note(in, p) -> out {
         + 0.5 * sin(TAU * in.freq * 0.501 * in.t)
         + p.texture * 0.2 * noise()
     tone = filter.svf.lp(raw, p.cutoff_hz * (0.7 + 0.3 * motion), 0.65, in.sr)
-    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
-    out.pan = clamp(in.midi_pan + 0.55 * sin(in.voice * 2.1), -1, 1)
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
+    pan = clamp(in.midi_pan + 0.55 * sin(in.voice * 2.1), -1, 1)
+    out.wave_l = amp * pan_l(pan)
+    out.wave_r = amp * pan_r(pan)
     out.l_limit = p.release_s
 }
 
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     left = reverb.fdn(in.wave_l, p.space, 0.88, 0.5)
     right = reverb.fdn(in.wave_r, p.space, 0.88, 0.5)
     wide = stereo.width(left, right, p.width)

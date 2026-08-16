@@ -106,7 +106,6 @@ pub(crate) struct Voice {
     pub(crate) t: f32,
     pub(crate) l: f32,
     pub(crate) rng: u32,
-    pub(crate) note_slot: usize,
 }
 
 impl Default for Voice {
@@ -123,26 +122,6 @@ impl Default for Voice {
             t: 0.0,
             l: 0.0,
             rng: 1,
-            note_slot: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct NoteDomain {
-    pub(crate) active: bool,
-    pub(crate) channel: u8,
-    pub(crate) note: MidiNote,
-    pub(crate) voices: u8,
-}
-
-impl Default for NoteDomain {
-    fn default() -> Self {
-        Self {
-            active: false,
-            channel: 0,
-            note: MidiNote::new(0),
-            voices: 0,
         }
     }
 }

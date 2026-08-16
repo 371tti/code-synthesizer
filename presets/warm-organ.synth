@@ -3,6 +3,8 @@ p.third = param(0.18, 0, 1, 0.01)
 p.drive = param(1.5, 0.2, 4, 0.01)
 p.release_s = param(1.5, 0.1, 6, 0.01)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     release = exp(-7.5 * in.l / p.release_s)
     fundamental = sin(TAU * in.freq * in.t)

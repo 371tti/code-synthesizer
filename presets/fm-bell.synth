@@ -2,6 +2,8 @@ p.index = param(5, 0, 12, 0.01)
 p.mod_decay_s = param(0.36, 0.03, 2, 0.01)
 p.release_s = param(1.2, 0.1, 6, 0.01)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     carrier = TAU * in.freq * in.t
     # 時間パラメーターを大きくすると、よりゆっくり減衰します。

@@ -14,6 +14,8 @@ p.drive = param(1.35, 0.5, 6, 0.01)
 p.vibrato_hz = param(5.1, 0.1, 12, 0.1)
 p.vibrato_cent = param(7, 0, 60, 0.1)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     f32 voice lowpass = 0
     attack = min(in.t / p.attack_s, 1)

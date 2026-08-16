@@ -10,7 +10,8 @@ p.body_mix = param(0.78, 0, 1, 0.01)
 p.noise_mix = param(0.32, 0, 1, 0.01, 74)
 p.metal_mix = param(0.18, 0, 1, 0.01)
 p.drive = param(1.6, 0.5, 8, 0.01)
-p.pan = param(0, -1, 1, 0.01)
+
+note.out.layout = mono
 
 fn note(in, p) -> out {
     release = exp(-10 * in.l / p.release_s)
@@ -23,6 +24,6 @@ fn note(in, p) -> out {
     noise_layer = exciter.noise(in.t, p.noise_decay_s)
     tone = drive(p.body_mix * body + p.metal_mix * metal + p.noise_mix * noise_layer, p.drive)
     out.wave = p.gain * in.s * in.vol * in.mexpr * release * tone
-    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

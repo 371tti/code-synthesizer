@@ -3,6 +3,8 @@
 # parameterは最初のfnより前に宣言します。
 # p.name = param(default, min, max, step, cc_link?)
 # 最後のMIDI CC番号は省略可能です。宣言順でVST automationとPlay controlsへ公開されます。
+note.out.layout = stereo
+
 p.gain = param(0.7, 0, 1.5, 0.01)
 p.attack_ms = param(16, 1, 500, 1)
 p.release_s = param(1.8, 0.1, 8, 0.01)
@@ -44,7 +46,10 @@ fn note(in, p) -> out {
 }
 
 # filterは全Voiceのmix後にPlugin全体で1回だけ呼ばれます。
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     # RingBufは明示state。peek_linear(seconds)はfractional delayを補間します。
     RingBuf<f32, 400ms> global history_l
     RingBuf<f32, 400ms> global history_r

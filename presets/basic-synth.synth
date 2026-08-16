@@ -16,7 +16,8 @@ p.brightness = param(0.8, 0, 1, 0.01, 74)
 p.drive = param(1.1, 0.5, 5, 0.01)
 p.vibrato_hz = param(5.2, 0.1, 12, 0.1)
 p.vibrato_cent = param(0, 0, 80, 0.1)
-p.pan = param(0, -1, 1, 0.01)
+
+note.out.layout = mono
 
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
@@ -40,6 +41,6 @@ fn note(in, p) -> out {
 
     out.wave = p.gain * in.s * in.vol * in.mexpr * attack * decay * release
         * tanh(p.drive * tone)
-    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

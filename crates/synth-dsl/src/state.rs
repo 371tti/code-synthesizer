@@ -1,7 +1,7 @@
 //! Prepared persistent storage for one audio program instance.
 //!
 //! Allocation and migration happen off the audio thread. JIT helpers only dereference
-//! fixed pointers and mutate the slot owned by the current audio callback.
+//! fixed pointers and mutate the slot owned by one voice worker or the main filter.
 
 use crate::dsp::{DspKind, DspProcessor};
 use std::{
@@ -17,7 +17,6 @@ pub const RUNTIME_STATE_SLOTS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StorageDomain {
     Voice,
-    Note,
     Global,
 }
 
@@ -25,7 +24,6 @@ impl StorageDomain {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "voice" => Self::Voice,
-            "note" => Self::Note,
             "global" => Self::Global,
             _ => return None,
         })
@@ -33,7 +31,7 @@ impl StorageDomain {
 
     fn cell_count(self) -> usize {
         match self {
-            Self::Voice | Self::Note => RUNTIME_STATE_SLOTS,
+            Self::Voice => RUNTIME_STATE_SLOTS,
             Self::Global => 1,
         }
     }
@@ -167,7 +165,8 @@ struct StateNode {
     storage: StateStorage,
 }
 
-// SAFETY: StateNodeへのwrite accessはProgramInstanceのaudio ownerだけが行います。
+// SAFETY: Voice cellは固定affinityの担当workerだけ、Global cellはfilterを
+// 実行するmain audio ownerだけがwriteします。同じcellへの同時accessはありません。
 // StateMigrationHandleはArcを保持するだけで、cellへアクセスするAPIを公開しません。
 unsafe impl Send for StateNode {}
 unsafe impl Sync for StateNode {}
@@ -234,27 +233,26 @@ impl StateNode {
     }
 
     #[inline]
-    fn slot(&self, voice_slot: usize, note_slot: usize) -> usize {
+    fn slot(&self, voice_slot: usize) -> usize {
         match self.domain {
             StorageDomain::Voice => voice_slot.min(RUNTIME_STATE_SLOTS - 1),
-            StorageDomain::Note => note_slot.min(RUNTIME_STATE_SLOTS - 1),
             StorageDomain::Global => 0,
         }
     }
 
     #[inline]
-    unsafe fn read(&self, voice_slot: usize, note_slot: usize) -> f32 {
-        let slot = self.slot(voice_slot, note_slot);
+    unsafe fn read(&self, voice_slot: usize) -> f32 {
+        let slot = self.slot(voice_slot);
         match &self.storage {
             StateStorage::Scalar { cells, .. } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { *cells[slot].get() }
             }
             StateStorage::GlobalScalar { value, .. } => {
                 f32::from_bits(value.load(Ordering::Relaxed))
             }
             StateStorage::Ring { cells } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { (&mut *cells[slot].get()).read() }
             }
             StateStorage::Dsp { .. } => 0.0,
@@ -262,18 +260,18 @@ impl StateNode {
     }
 
     #[inline]
-    unsafe fn write(&self, voice_slot: usize, note_slot: usize, value: f32) {
-        let slot = self.slot(voice_slot, note_slot);
+    unsafe fn write(&self, voice_slot: usize, value: f32) {
+        let slot = self.slot(voice_slot);
         match &self.storage {
             StateStorage::Scalar { cells, .. } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { *cells[slot].get() = value };
             }
             StateStorage::GlobalScalar { value: cell, .. } => {
                 cell.store(value.to_bits(), Ordering::Relaxed);
             }
             StateStorage::Ring { cells } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { (&mut *cells[slot].get()).write(value) };
             }
             StateStorage::Dsp { .. } => {}
@@ -282,7 +280,7 @@ impl StateNode {
 
     unsafe fn commit(&self, slot: usize) {
         if let StateStorage::Ring { cells } = &self.storage {
-            // SAFETY: slot belongs to the single audio owner.
+            // SAFETY: the selected slot has one execution owner.
             unsafe { (&mut *cells[slot].get()).commit() };
         }
     }
@@ -290,35 +288,29 @@ impl StateNode {
     unsafe fn reset_slot(&self, slot: usize) {
         match &self.storage {
             StateStorage::Scalar { initial, cells } => {
-                // SAFETY: reset is performed by the single audio owner/setup thread.
+                // SAFETY: reset runs only at a completed block/lifecycle boundary.
                 unsafe { *cells[slot].get() = *initial };
             }
             StateStorage::GlobalScalar { initial, value } => {
                 value.store(initial.to_bits(), Ordering::Relaxed);
             }
             StateStorage::Ring { cells } => {
-                // SAFETY: reset is performed by the single audio owner/setup thread.
+                // SAFETY: reset runs only at a completed block/lifecycle boundary.
                 unsafe { (&mut *cells[slot].get()).reset() };
             }
             StateStorage::Dsp { cells } => {
-                // SAFETY: reset is performed by the single audio owner/setup thread.
+                // SAFETY: reset runs only at a completed block/lifecycle boundary.
                 unsafe { (&mut *cells[slot].get()).reset() };
             }
         }
     }
 
     #[inline]
-    unsafe fn ring_peek(
-        &self,
-        voice_slot: usize,
-        note_slot: usize,
-        delay_seconds: f32,
-        linear: bool,
-    ) -> f32 {
-        let slot = self.slot(voice_slot, note_slot);
+    unsafe fn ring_peek(&self, voice_slot: usize, delay_seconds: f32, linear: bool) -> f32 {
+        let slot = self.slot(voice_slot);
         match &self.storage {
             StateStorage::Ring { cells } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { (&mut *cells[slot].get()).peek(delay_seconds, self.sample_rate, linear) }
             }
             _ => 0.0,
@@ -337,11 +329,11 @@ impl StateNode {
     }
 
     #[inline]
-    unsafe fn dsp_process(&self, voice_slot: usize, note_slot: usize, arguments: [f32; 5]) -> f32 {
-        let slot = self.slot(voice_slot, note_slot);
+    unsafe fn dsp_process(&self, voice_slot: usize, arguments: [f32; 5]) -> f32 {
+        let slot = self.slot(voice_slot);
         match &self.storage {
             StateStorage::Dsp { cells } => {
-                // SAFETY: audio owner has exclusive runtime access to the selected cell.
+                // SAFETY: the current execution owner exclusively owns this cell.
                 unsafe { (&mut *cells[slot].get()).process(arguments) }
             }
             _ => 0.0,
@@ -397,7 +389,6 @@ pub(crate) struct RuntimeState {
     nodes: Vec<Arc<StateNode>>,
     pointers: Box<[*const StateNode]>,
     voice_rings: Box<[usize]>,
-    note_rings: Box<[usize]>,
     global_rings: Box<[usize]>,
 }
 
@@ -428,7 +419,10 @@ impl RuntimeState {
         sample_rate: f32,
         previous: Option<&StateMigrationHandle>,
     ) -> Result<Self, String> {
-        Self::prepare_with(specs, sample_rate, previous, true)
+        // note() is restricted to voice state, so workers never access global
+        // processors. Sharing their backing with the main filter runtime avoids
+        // allocating unused per-worker global RingBuf/DSP shards.
+        Self::prepare_with(specs, sample_rate, previous, false)
     }
 
     fn prepare_with(
@@ -487,7 +481,6 @@ impl RuntimeState {
                 .into_boxed_slice()
         };
         let voice_rings = ring_indices(StorageDomain::Voice);
-        let note_rings = ring_indices(StorageDomain::Note);
         let global_rings = ring_indices(StorageDomain::Global);
         Ok(Self {
             sample_rate_bits,
@@ -495,7 +488,6 @@ impl RuntimeState {
             nodes,
             pointers,
             voice_rings,
-            note_rings,
             global_rings,
         })
     }
@@ -519,23 +511,17 @@ impl RuntimeState {
     }
 
     #[inline]
-    pub(crate) fn context(&mut self, voice_slot: usize, note_slot: usize) -> EvalContext {
+    pub(crate) fn context(&mut self, voice_slot: usize) -> EvalContext {
         EvalContext {
             nodes: self.pointers.as_ptr(),
             node_count: self.pointers.len(),
             voice_slot,
-            note_slot,
         }
     }
 
     #[inline]
     pub(crate) fn commit_voice(&mut self, voice_slot: usize) {
         self.commit_indices(StorageDomain::Voice, voice_slot, &self.voice_rings);
-    }
-
-    #[inline]
-    pub(crate) fn commit_note(&mut self, note_slot: usize) {
-        self.commit_indices(StorageDomain::Note, note_slot, &self.note_rings);
     }
 
     #[inline]
@@ -546,7 +532,7 @@ impl RuntimeState {
     fn commit_indices(&self, domain: StorageDomain, slot: usize, indices: &[usize]) {
         debug_assert!(slot < domain.cell_count());
         for &index in indices {
-            // SAFETY: the audio callback is the only runtime state writer.
+            // SAFETY: this domain slot has one execution owner for the block.
             unsafe { self.nodes[index].commit(slot) };
         }
     }
@@ -555,14 +541,10 @@ impl RuntimeState {
         self.reset_domain_slot(StorageDomain::Voice, slot);
     }
 
-    pub(crate) fn reset_note(&mut self, slot: usize) {
-        self.reset_domain_slot(StorageDomain::Note, slot);
-    }
-
     pub(crate) fn reset_all(&mut self) {
         for node in &self.nodes {
             for slot in 0..node.domain.cell_count() {
-                // SAFETY: setup/audio owner invokes reset without concurrent evaluation.
+                // SAFETY: reset is invoked without concurrent evaluation.
                 unsafe { node.reset_slot(slot) };
             }
         }
@@ -574,7 +556,7 @@ impl RuntimeState {
         }
         for node in &self.nodes {
             if node.domain == domain {
-                // SAFETY: the audio callback owns the selected lifecycle slot.
+                // SAFETY: lifecycle handling owns the selected slot after worker completion.
                 unsafe { node.reset_slot(slot) };
             }
         }
@@ -586,7 +568,6 @@ pub(crate) struct EvalContext {
     nodes: *const *const StateNode,
     node_count: usize,
     voice_slot: usize,
-    note_slot: usize,
 }
 
 #[inline]
@@ -602,8 +583,8 @@ pub(crate) extern "C" fn jit_state_read(context: *mut EvalContext, index: u32) -
     }
     // SAFETY: pointers refer to Arc-owned nodes for the entire native call.
     let node = unsafe { &**context.nodes.add(index) };
-    // SAFETY: the current audio callback exclusively owns runtime mutation.
-    unsafe { node.read(context.voice_slot, context.note_slot) }
+    // SAFETY: the current worker/filter owner exclusively owns this domain cell.
+    unsafe { node.read(context.voice_slot) }
 }
 
 #[inline]
@@ -619,8 +600,36 @@ pub(crate) extern "C" fn jit_state_write(context: *mut EvalContext, index: u32, 
     }
     // SAFETY: pointers refer to Arc-owned nodes for the entire native call.
     let node = unsafe { &**context.nodes.add(index) };
-    // SAFETY: the current audio callback exclusively owns runtime mutation.
-    unsafe { node.write(context.voice_slot, context.note_slot, value) };
+    // SAFETY: the current worker/filter owner exclusively owns this domain cell.
+    unsafe { node.write(context.voice_slot, value) };
+}
+
+#[inline]
+pub(crate) extern "C" fn jit_commit_voice(context: *mut EvalContext) {
+    if context.is_null() {
+        return;
+    }
+    let context = unsafe { &*context };
+    for index in 0..context.node_count {
+        let node = unsafe { &**context.nodes.add(index) };
+        if node.domain == StorageDomain::Voice {
+            unsafe { node.commit(context.voice_slot) };
+        }
+    }
+}
+
+#[inline]
+pub(crate) extern "C" fn jit_commit_global(context: *mut EvalContext) {
+    if context.is_null() {
+        return;
+    }
+    let context = unsafe { &*context };
+    for index in 0..context.node_count {
+        let node = unsafe { &**context.nodes.add(index) };
+        if node.domain == StorageDomain::Global {
+            unsafe { node.commit(0) };
+        }
+    }
 }
 
 #[inline]
@@ -641,15 +650,8 @@ pub(crate) extern "C" fn jit_ring_peek(
     }
     // SAFETY: pointers refer to Arc-owned nodes for the entire native call.
     let node = unsafe { &**context.nodes.add(index) };
-    // SAFETY: the current audio callback exclusively owns runtime mutation.
-    unsafe {
-        node.ring_peek(
-            context.voice_slot,
-            context.note_slot,
-            delay_seconds,
-            linear != 0,
-        )
-    }
+    // SAFETY: the current worker/filter owner exclusively owns this domain cell.
+    unsafe { node.ring_peek(context.voice_slot, delay_seconds, linear != 0) }
 }
 
 #[inline]
@@ -703,8 +705,8 @@ pub(crate) extern "C" fn jit_dsp_process(
     }
     // SAFETY: pointers refer to Arc-owned nodes for the entire native call.
     let node = unsafe { &**context.nodes.add(index) };
-    // SAFETY: the current audio callback exclusively owns runtime mutation.
-    unsafe { node.dsp_process(context.voice_slot, context.note_slot, [a, b, c, d, e]) }
+    // SAFETY: the current worker/filter owner exclusively owns this domain cell.
+    unsafe { node.dsp_process(context.voice_slot, [a, b, c, d, e]) }
 }
 
 #[cfg(test)]
@@ -727,16 +729,16 @@ mod tests {
     fn ring_reads_old_front_and_commits_last_write() {
         let mut state =
             RuntimeState::prepare(ring_spec(StorageDomain::Global), 48_000.0, None).unwrap();
-        let mut context = state.context(0, 0);
+        let mut context = state.context(0);
         assert_eq!(jit_state_read(&mut context, 0), 0.0);
         jit_state_write(&mut context, 0, 1.0);
         jit_state_write(&mut context, 0, 2.0);
         assert_eq!(jit_state_read(&mut context, 0), 0.0);
         state.commit_global();
-        let mut context = state.context(0, 0);
+        let mut context = state.context(0);
         assert_eq!(jit_state_read(&mut context, 0), 0.0);
         state.commit_global();
-        let mut context = state.context(0, 0);
+        let mut context = state.context(0);
         assert_eq!(jit_state_read(&mut context, 0), 2.0);
     }
 
@@ -744,15 +746,15 @@ mod tests {
     fn exact_hot_reload_reuses_storage() {
         let specs = ring_spec(StorageDomain::Global);
         let mut old = RuntimeState::prepare(specs.clone(), 48_000.0, None).unwrap();
-        let mut context = old.context(0, 0);
+        let mut context = old.context(0);
         jit_state_write(&mut context, 0, 7.0);
         old.commit_global();
-        let mut context = old.context(0, 0);
+        let mut context = old.context(0);
         assert_eq!(jit_state_read(&mut context, 0), 0.0);
         old.commit_global();
         let handle = old.migration_handle();
         let mut next = RuntimeState::prepare(specs, 48_000.0, Some(&handle)).unwrap();
-        let mut context = next.context(0, 0);
+        let mut context = next.context(0);
         assert_eq!(jit_state_read(&mut context, 0), 7.0);
     }
 }

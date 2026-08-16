@@ -3,6 +3,8 @@ p.gain = param(0.7, 0, 1.5, 0.01)
 p.decay_s = param(0.42, 0.04, 3, 0.01)
 p.release_s = param(1.1, 0.1, 6, 0.01)
 p.resonance = param(0.35, 0, 1, 0.01, 74)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / 0.002, 1)
     body = exp(-5.8 * in.t / p.decay_s)

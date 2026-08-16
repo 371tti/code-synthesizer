@@ -7,6 +7,8 @@ p.glass_mix = param(0.42, 0, 1, 0.01, 74)
 p.sparkle = param(0.35, 0, 1, 0.01)
 p.pan_spread = param(0.45, 0, 1, 0.01)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     excite = exciter.noise(in.t, 6ms)
     string = string.karplus(excite, in.freq, p.decay_s, p.damping)
@@ -16,6 +18,6 @@ fn note(in, p) -> out {
     release = exp(-8 * in.l / p.release_s)
     out.wave = p.gain * in.s * in.vol * in.mexpr * release
         * (string + p.glass_mix * glass + shimmer)
-    out.pan = clamp(in.midi_pan + p.pan_spread * sin(in.voice * 1.91), -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

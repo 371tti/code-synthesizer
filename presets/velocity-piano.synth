@@ -2,6 +2,8 @@ p.gain = param(0.8, 0, 1.4, 0.01)
 p.brightness = param(0.7, 0, 1, 0.01)
 p.release_s = param(2.2, 0.2, 8, 0.01)
 p.hammer = param(0.55, 0, 1, 0.01)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / 0.004, 1)
     release = exp(-9 * in.l / p.release_s)

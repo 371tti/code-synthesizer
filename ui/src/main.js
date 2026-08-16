@@ -18,12 +18,23 @@ const INPUT_DOCS = {
   program: 'MIDIプログラム番号。', sr: 'ホストのサンプルレートHz。', tempo: 'ホストテンポBPM。',
   beat: '小節内の拍位置。', bar: '現在の小節のPPQ位置。', ppq: 'ホストのPPQ位置。',
   playing: 'ホストの再生中は1。', voice: 'ボイススロット番号。', rand: 'サンプルごとのノイズ、-1–1。',
+  wave: 'effect.in.layout = mono の入力。note mixとaudio inputをdownmixした値。',
+  wave_l: 'effect.in.layout = stereo の左入力。', wave_r: 'effect.in.layout = stereo の右入力。',
 };
+
 const OUTPUT_DOCS = {
-  wave: '必須のモノラルボイス出力。', pan: '任意のボイスパン、-1–1。',
+  wave: 'mono layout の必須出力。',
+  pan: 'note.out.layout = mono でのみ使用できる任意pan、-1–1。',
   l_limit: '必須。ノートを離してからボイスを終了するまでの秒数。',
-  wave_l: 'true stereoの左出力。', wave_r: 'true stereoの右出力。',
+  wave_l: 'stereo layout の必須左出力。', wave_r: 'stereo layout の必須右出力。',
 };
+
+const TOP_LEVEL_DOCS = {
+  'note.out.layout': 'note() が生成するvoice出力のlayout。monoまたはstereo。',
+  'effect.in.layout': 'effect() が受け取るaudio入力のlayout。monoまたはstereo。',
+  'effect.out.layout': 'effect() が返すaudio出力のlayout。monoまたはstereo。',
+};
+
 const FUNCTION_DOCS = {
   sin: ['sin(x)', 'Sine.'], cos: ['cos(x)', 'Cosine.'], tan: ['tan(x)', 'Tangent.'],
   sinh: ['sinh(x)', 'Hyperbolic sine.'], cosh: ['cosh(x)', 'Hyperbolic cosine.'],
@@ -131,56 +142,111 @@ const RING_METHOD_DOCS = {
   len: ['len()', 'RingBuf容量をsample数で返します。'],
   duration: ['duration()', 'RingBuf容量を秒で返します。'],
 };
+
 const FUNCTION_PATTERN = Object.keys(FUNCTION_DOCS)
   .map(name => name.replaceAll('.', '\\.'))
   .join('|');
 
 monaco.languages.register({ id: 'synth-dsl' });
-monaco.languages.setMonarchTokensProvider('synth-dsl', { tokenizer: { root: [
-  [/(#|\/\/).*$/, 'comment'], [/\bp(?:\.[A-Za-z_][\w]*)+\b/, 'parameter'], [/\b(?:TAU|PI|E|PHI)\b/, 'constant'],
-  [/\b(?:fn|f32|RingBuf|voice|note|global|in|out)\b/, 'keyword'],
-  [new RegExp(`\\b(?:${FUNCTION_PATTERN}|param)\\b(?=\\s*\\()`), 'function'],
-  [/\bin\.[A-Za-z_][\w]*/, 'variable.predefined'],
-  [/\bout\.(?:wave|wave_l|wave_r|pan|l_limit)\b/, 'type.identifier'], [/[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*/, 'identifier'],
-  [/(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:ms|us|s|k|m|u|g)?/i, 'number'],
-  [/(?:->|==|!=|<=|>=|[=+\-*\/%^<>])/, 'operator'], [/[(){},]/, 'delimiter'],
-] } });
+
+monaco.languages.setMonarchTokensProvider('synth-dsl', {
+  tokenizer: {
+    root: [
+      [/(#|\/\/).*$/, 'comment'],
+      [/\bp(?:\.[A-Za-z_][\w]*)+\b/, 'parameter'],
+      [/\b(?:TAU|PI|E|PHI)\b/, 'constant'],
+      [/\b(?:mono|stereo|layout|effect|fn|f32|RingBuf|voice|note|global|in|out)\b/, 'keyword'],
+      [new RegExp(`\\b(?:${FUNCTION_PATTERN}|param)\\b(?=\\s*\\()`), 'function'],
+      [/\bin\.[A-Za-z_][\w]*/, 'variable.predefined'],
+      [/\bout\.(?:wave|wave_l|wave_r|pan|l_limit)\b/, 'type.identifier'],
+      [/[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*/, 'identifier'],
+      [/(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:ms|us|s|k|m|u|g)?/i, 'number'],
+      [/(?:->|==|!=|<=|>=|[=+\-*\/%^<>])/, 'operator'],
+      [/[(){},]/, 'delimiter'],
+    ],
+  },
+});
+
 monaco.languages.setLanguageConfiguration('synth-dsl', {
   wordPattern: /[A-Za-z_][A-Za-z0-9_]*/,
   brackets: [['(', ')'], ['{', '}']],
-  autoClosingPairs: [{ open: '(', close: ')' }, { open: '{', close: '}' }],
-  surroundingPairs: [{ open: '(', close: ')' }, { open: '{', close: '}' }],
+  autoClosingPairs: [
+    { open: '(', close: ')' },
+    { open: '{', close: '}' },
+  ],
+  surroundingPairs: [
+    { open: '(', close: ')' },
+    { open: '{', close: '}' },
+  ],
 });
 
 monaco.editor.defineTheme('math-synth', {
-  base: 'vs-dark', inherit: true,
+  base: 'vs-dark',
+  inherit: true,
   rules: [
-    { token: 'comment', foreground: '666666', fontStyle: 'italic' }, { token: 'constant', foreground: 'b8a985' },
-    { token: 'function', foreground: 'a9b7e6' }, { token: 'parameter', foreground: 'd4b6cf' },
-    { token: 'variable.predefined', foreground: '91a6b8' }, { token: 'type.identifier', foreground: 'cccccc', fontStyle: 'bold' },
-    { token: 'number', foreground: 'b9aa9d' }, { token: 'operator', foreground: '999999' },
+    { token: 'comment', foreground: '666666', fontStyle: 'italic' },
+    { token: 'constant', foreground: 'b8a985' },
+    { token: 'function', foreground: 'a9b7e6' },
+    { token: 'parameter', foreground: 'd4b6cf' },
+    { token: 'variable.predefined', foreground: '91a6b8' },
+    { token: 'type.identifier', foreground: 'cccccc', fontStyle: 'bold' },
+    { token: 'number', foreground: 'b9aa9d' },
+    { token: 'operator', foreground: '999999' },
   ],
   colors: {
-    'editor.background': '#1a1a1a', 'editor.foreground': '#999999', 'editorLineNumber.foreground': '#444444',
-    'editorLineNumber.activeForeground': '#a9b7e6', 'editorCursor.foreground': '#a9b7e6',
-    'editor.selectionBackground': '#6f7a9566', 'editor.lineHighlightBackground': '#202020',
-    'editorWidget.background': '#1a1a1a', 'editorWidget.border': '#6f7a95',
-    'editorSuggestWidget.background': '#1a1a1a', 'editorSuggestWidget.border': '#6f7a95',
-    'editorSuggestWidget.selectedBackground': '#282828', 'editorHoverWidget.background': '#1a1a1a',
-    'editorHoverWidget.border': '#6f7a95', 'input.background': '#121212',
+    'editor.background': '#1a1a1a',
+    'editor.foreground': '#999999',
+    'editorLineNumber.foreground': '#444444',
+    'editorLineNumber.activeForeground': '#a9b7e6',
+    'editorCursor.foreground': '#a9b7e6',
+    'editor.selectionBackground': '#6f7a9566',
+    'editor.lineHighlightBackground': '#202020',
+    'editorWidget.background': '#1a1a1a',
+    'editorWidget.border': '#6f7a95',
+    'editorSuggestWidget.background': '#1a1a1a',
+    'editorSuggestWidget.border': '#6f7a95',
+    'editorSuggestWidget.selectedBackground': '#282828',
+    'editorHoverWidget.background': '#1a1a1a',
+    'editorHoverWidget.border': '#6f7a95',
+    'input.background': '#121212',
   },
 });
 
 const editor = monaco.editor.create(document.querySelector('#editor'), {
-  value: '', language: 'synth-dsl', theme: 'math-synth', automaticLayout: true, minimap: { enabled: false },
-  contextmenu: false, glyphMargin: true, folding: false, fontFamily: "'UDEV Gothic HSLG', 'Cascadia Code', Consolas, monospace",
-  fontSize: 13, lineHeight: 21, padding: { top: 12, bottom: 12 }, scrollBeyondLastLine: false,
-  smoothScrolling: true, bracketPairColorization: { enabled: true }, guides: { bracketPairs: true, indentation: false },
-  overviewRulerBorder: false, renderLineHighlight: 'all', wordWrap: 'on',
-  quickSuggestions: { other: true, comments: false, strings: false }, quickSuggestionsDelay: 0,
-  suggest: { showWords: true, showSnippets: true, preview: true, snippetsPreventQuickSuggestions: false },
-  snippetSuggestions: 'top', wordBasedSuggestions: 'off', suggestOnTriggerCharacters: true,
-  acceptSuggestionOnEnter: 'on', suggestSelection: 'first', parameterHints: { enabled: true }, tabSize: 2,
+  value: '',
+  language: 'synth-dsl',
+  theme: 'math-synth',
+  automaticLayout: true,
+  minimap: { enabled: false },
+  contextmenu: false,
+  glyphMargin: true,
+  folding: false,
+  fontFamily: "'UDEV Gothic HSLG', 'Cascadia Code', Consolas, monospace",
+  fontSize: 13,
+  lineHeight: 21,
+  padding: { top: 12, bottom: 12 },
+  scrollBeyondLastLine: false,
+  smoothScrolling: true,
+  bracketPairColorization: { enabled: true },
+  guides: { bracketPairs: true, indentation: false },
+  overviewRulerBorder: false,
+  renderLineHighlight: 'all',
+  wordWrap: 'on',
+  quickSuggestions: { other: true, comments: false, strings: false },
+  quickSuggestionsDelay: 0,
+  suggest: {
+    showWords: true,
+    showSnippets: true,
+    preview: true,
+    snippetsPreventQuickSuggestions: false,
+  },
+  snippetSuggestions: 'top',
+  wordBasedSuggestions: 'off',
+  suggestOnTriggerCharacters: true,
+  acceptSuggestionOnEnter: 'on',
+  suggestSelection: 'first',
+  parameterHints: { enabled: true },
+  tabSize: 2,
 });
 
 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
@@ -188,64 +254,245 @@ editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
 });
 
 function sourceSymbols(model) {
-  return [...new Set([...model.getValue().matchAll(/^\s*([A-Za-z_][\w.]*)\s*=/gm)].map(match => match[1]))];
+  return [...new Set(
+    [...model.getValue().matchAll(/^\s*([A-Za-z_][\w.]*)\s*=/gm)]
+      .map(match => match[1]),
+  )];
 }
+
 function currentFunction(model, position) {
-  const source = model.getValueInRange(new monaco.Range(1, 1, position.lineNumber, position.column));
-  return [...source.matchAll(/\bfn\s+([A-Za-z_][\w.]*)\s*\([^)]*\)\s*->\s*out\s*\{/g)].at(-1)?.[1] || '';
+  const source = model.getValueInRange(
+    new monaco.Range(1, 1, position.lineNumber, position.column),
+  );
+
+  return [
+    ...source.matchAll(
+      /\bfn\s+([A-Za-z_][\w.]*)\s*\([^)]*\)\s*->\s*out\s*\{/g,
+    ),
+  ].at(-1)?.[1] || '';
+}
+
+function declaredLayout(model, target) {
+  const match = model.getValue().match(
+    new RegExp(
+      `^\\s*${target.replaceAll('.', '\\\\.')}\\s*=\\s*(mono|stereo)\\b`,
+      'm',
+    ),
+  );
+
+  return match?.[1] || 'mono';
 }
 
 function hierarchicalSourceSymbols(model) {
   const source = model.getValue();
-  const symbols = new Map(sourceSymbols(model).map(name => [name, {}]));
-  for (const match of source.matchAll(/\bRingBuf\s*<[^>]+>\s+(?:voice|note|global)\s+([A-Za-z_][\w.]*)/g)) {
-    for (const [method, [signature, documentation]] of Object.entries(RING_METHOD_DOCS)) {
-      symbols.set(`${match[1]}.${method}`, { signature, documentation });
+  const symbols = new Map(
+    sourceSymbols(model).map(name => [name, {}]),
+  );
+
+  for (
+    const match of source.matchAll(
+      /\bRingBuf\s*<[^>]+>\s+(?:voice|note|global)\s+([A-Za-z_][\w.]*)/g,
+    )
+  ) {
+    for (
+      const [method, [signature, documentation]]
+      of Object.entries(RING_METHOD_DOCS)
+    ) {
+      symbols.set(
+        `${match[1]}.${method}`,
+        { signature, documentation },
+      );
     }
   }
-  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*biquad\./gm)) {
-    for (const field of ['b0', 'b1', 'b2', 'a1', 'a2']) symbols.set(`${match[1]}.${field}`, {});
+
+  for (
+    const match of source.matchAll(
+      /^\s*([A-Za-z_][\w.]*)\s*=\s*biquad\./gm,
+    )
+  ) {
+    for (const field of ['b0', 'b1', 'b2', 'a1', 'a2']) {
+      symbols.set(`${match[1]}.${field}`, {});
+    }
   }
-  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*(?:pan\.equal_power|stereo\.width)\s*\(/gm)) {
-    symbols.set(`${match[1]}.left`, {}); symbols.set(`${match[1]}.right`, {});
+
+  for (
+    const match of source.matchAll(
+      /^\s*([A-Za-z_][\w.]*)\s*=\s*(?:pan\.equal_power|stereo\.width)\s*\(/gm,
+    )
+  ) {
+    symbols.set(`${match[1]}.left`, {});
+    symbols.set(`${match[1]}.right`, {});
   }
-  for (const match of source.matchAll(/^\s*([A-Za-z_][\w.]*)\s*=\s*delay\.multitap\s*\(/gm)) {
-    for (let index = 1; index <= 8; index += 1) symbols.set(`${match[1]}.tap${index}`, {});
+
+  for (
+    const match of source.matchAll(
+      /^\s*([A-Za-z_][\w.]*)\s*=\s*delay\.multitap\s*\(/gm,
+    )
+  ) {
+    for (let index = 1; index <= 8; index += 1) {
+      symbols.set(`${match[1]}.tap${index}`, {});
+    }
   }
+
   return symbols;
 }
 
-function hierarchicalCompletions(model, position) {
-  const line = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
-  const typed = line.match(/[A-Za-z_][\w.]*$/)?.[0] || '';
-  const dot = typed.lastIndexOf('.');
-  const parent = dot >= 0 ? typed.slice(0, dot + 1) : '';
-  const fragment = dot >= 0 ? typed.slice(dot + 1) : typed;
+function hasEndpoint(source, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*fn\\s+${escaped}\\s*\\(`, 'm').test(source);
+}
+
+function layoutValueCompletions(model, position) {
+  const prefix = model
+    .getLineContent(position.lineNumber)
+    .slice(0, position.column - 1);
+
+  const match = prefix.match(
+    /^\s*(note\.out\.layout|effect\.(?:in|out)\.layout)\s*=\s*([A-Za-z_]*)$/,
+  );
+
+  if (!match) return null;
+
+  const fragment = match[2];
   const range = new monaco.Range(
     position.lineNumber,
     position.column - fragment.length,
     position.lineNumber,
     position.column,
   );
+
+  return {
+    suggestions: ['mono', 'stereo'].map((layout, index) => ({
+      label: layout,
+      kind: monaco.languages.CompletionItemKind.EnumMember,
+      insertText: layout,
+      detail: `${match[1]} = ${layout}`,
+      documentation: TOP_LEVEL_DOCS[match[1]],
+      range,
+      sortText: `0-${index}-${layout}`,
+    })),
+  };
+}
+
+function hierarchicalCompletions(model, position) {
+  const layoutValues = layoutValueCompletions(model, position);
+  if (layoutValues) return layoutValues;
+  const line = model
+    .getLineContent(position.lineNumber)
+    .slice(0, position.column - 1);
+
+  const typed = line.match(/[A-Za-z_][\w.]*$/)?.[0] || '';
+  const dot = typed.lastIndexOf('.');
+  const parent = dot >= 0 ? typed.slice(0, dot + 1) : '';
+  const fragment = dot >= 0 ? typed.slice(dot + 1) : typed;
+
+  const range = new monaco.Range(
+    position.lineNumber,
+    position.column - fragment.length,
+    position.lineNumber,
+    position.column,
+  );
+
   const scope = currentFunction(model, position);
-  const inputNames = scope === 'filter'
-    ? ['wave_l', 'wave_r', 'sr', 'tempo', 'beat', 'bar', 'ppq', 'playing', 'mw', 'vol', 'midi_pan', 'mexpr', 'sustain', 'program']
+  const noteLayout = declaredLayout(model, 'note.out.layout');
+  const effectInputLayout = declaredLayout(model, 'effect.in.layout');
+  const effectOutputLayout = declaredLayout(model, 'effect.out.layout');
+
+  const effectScope = scope === 'filter' || scope === 'effect';
+
+  const inputNames = effectScope
+    ? [
+      ...(effectInputLayout === 'stereo'
+        ? ['wave_l', 'wave_r']
+        : ['wave']),
+      'sr',
+      'tempo',
+      'beat',
+      'bar',
+      'ppq',
+      'playing',
+      'mw',
+      'vol',
+      'midi_pan',
+      'mexpr',
+      'sustain',
+      'program',
+    ]
     : Object.keys(INPUT_DOCS);
+
+  const outputLayout = effectScope
+    ? effectOutputLayout
+    : noteLayout;
+
+  const outputNames = effectScope
+    ? (
+      outputLayout === 'stereo'
+        ? ['wave_l', 'wave_r']
+        : ['wave']
+    )
+    : (
+      outputLayout === 'stereo'
+        ? ['wave_l', 'wave_r', 'l_limit']
+        : ['wave', 'pan', 'l_limit']
+    );
+
   const descriptors = [];
+
+  for (const [name, documentation] of Object.entries(TOP_LEVEL_DOCS)) {
+    descriptors.push({
+      name,
+      kind: monaco.languages.CompletionItemKind.Property,
+      detail: 'Audio layout configuration',
+      documentation,
+      sort: '0',
+    });
+  }
+
   for (const label of inputNames) {
-    descriptors.push({ name: `in.${label}`, kind: monaco.languages.CompletionItemKind.Variable, detail: '実行時入力', documentation: INPUT_DOCS[label], sort: '2' });
+    descriptors.push({
+      name: `in.${label}`,
+      kind: monaco.languages.CompletionItemKind.Variable,
+      detail: '実行時入力',
+      documentation: INPUT_DOCS[label],
+      sort: '2',
+    });
   }
-  for (const [label, documentation] of Object.entries(OUTPUT_DOCS)) {
-    descriptors.push({ name: `out.${label}`, kind: monaco.languages.CompletionItemKind.Field, detail: 'Entry output', documentation, sort: '1' });
+
+  for (const label of outputNames) {
+    descriptors.push({
+      name: `out.${label}`,
+      kind: monaco.languages.CompletionItemKind.Field,
+      detail: 'Entry output',
+      documentation: OUTPUT_DOCS[label],
+      sort: '1',
+    });
   }
-  for (const [name, [signature, documentation]] of Object.entries(FUNCTION_DOCS)) {
-    descriptors.push({ name, kind: monaco.languages.CompletionItemKind.Function, detail: signature, documentation, signature, sort: '3' });
+
+  for (
+    const [name, [signature, documentation]]
+    of Object.entries(FUNCTION_DOCS)
+  ) {
+    descriptors.push({
+      name,
+      kind: monaco.languages.CompletionItemKind.Function,
+      detail: signature,
+      documentation,
+      signature,
+      sort: '3',
+    });
   }
+
   for (const [name, metadata] of hierarchicalSourceSymbols(model)) {
     descriptors.push({
       name,
-      kind: name.startsWith('p.') ? monaco.languages.CompletionItemKind.Property : monaco.languages.CompletionItemKind.Variable,
-      detail: metadata.signature || (name.startsWith('p.') ? 'ユーザーパラメーター' : 'local / qualified value'),
+      kind: name.startsWith('p.')
+        ? monaco.languages.CompletionItemKind.Property
+        : monaco.languages.CompletionItemKind.Variable,
+      detail: metadata.signature || (
+        name.startsWith('p.')
+          ? 'ユーザーパラメーター'
+          : 'local / qualified value'
+      ),
       documentation: metadata.documentation,
       signature: metadata.signature,
       sort: '1',
@@ -254,16 +501,24 @@ function hierarchicalCompletions(model, position) {
 
   const suggestions = [];
   const seen = new Set();
+
   for (const descriptor of descriptors) {
     if (!descriptor.name.startsWith(parent)) continue;
+
     const remainder = descriptor.name.slice(parent.length);
     if (!remainder) continue;
+
     const separator = remainder.indexOf('.');
-    const segment = separator >= 0 ? remainder.slice(0, separator) : remainder;
+    const segment = separator >= 0
+      ? remainder.slice(0, separator)
+      : remainder;
+
     const hasChildren = separator >= 0;
     const key = `${parent}${segment}${hasChildren ? '.' : ''}`;
+
     if (seen.has(key)) continue;
     seen.add(key);
+
     if (hasChildren) {
       suggestions.push({
         label: `${segment}.`,
@@ -272,20 +527,39 @@ function hierarchicalCompletions(model, position) {
         detail: `${parent}${segment} namespace`,
         range,
         sortText: `0-${segment}`,
-        command: { id: 'editor.action.triggerSuggest', title: '次の候補を表示' },
+        command: {
+          id: 'editor.action.triggerSuggest',
+          title: '次の候補を表示',
+        },
       });
+
       continue;
     }
+
     let insertText = segment;
     let insertTextRules;
+
     if (descriptor.signature) {
-      const raw = descriptor.signature.slice(descriptor.signature.indexOf('(') + 1, -1);
+      const raw = descriptor.signature.slice(
+        descriptor.signature.indexOf('(') + 1,
+        -1,
+      );
+
       const args = raw
-        ? raw.split(', ').map((argument, index) => '${' + (index + 1) + ':' + argument + '}').join(', ')
+        ? raw
+          .split(', ')
+          .map(
+            (argument, index) =>
+              '${' + (index + 1) + ':' + argument + '}',
+          )
+          .join(', ')
         : '';
+
       insertText = `${segment}(${args})`;
-      insertTextRules = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
+      insertTextRules =
+        monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
     }
+
     suggestions.push({
       label: segment,
       kind: descriptor.kind,
@@ -297,26 +571,82 @@ function hierarchicalCompletions(model, position) {
       sortText: `${descriptor.sort}-${segment}`,
     });
   }
+
   if (!parent) {
+    if (!scope) {
+      suggestions.unshift({
+        label: 'p.',
+        kind: monaco.languages.CompletionItemKind.Module,
+        insertText: 'p.',
+        detail: 'User parameter namespace',
+        documentation: 'p.name = param(...) でVST automation対応parameterを宣言します。',
+        range,
+        sortText: '0-p-namespace',
+        command: {
+          id: 'editor.action.triggerSuggest',
+          title: 'parameter候補を表示',
+        },
+      });
+    }
+
+    if (parent === 'p.' && !scope) {
+      suggestions.unshift({
+        label: 'new parameter',
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        insertText: '${1:name} = param(${2:0.5}, ${3:0}, ${4:1}, ${5:0.01}${6:, 74})',
+        insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+        detail: '新しい p.* VST parameter を宣言',
+        documentation: 'トップレベルで p.name = param(default, min, max, step, cc_link?) を宣言します。',
+        range,
+        sortText: '0-new-parameter',
+      });
+    }
+
     suggestions.push({
-      label: 'param', kind: monaco.languages.CompletionItemKind.Snippet,
-      insertText: 'p.${1:name} = param(${2:0.5}, ${3:0}, ${4:1}, ${5:0.01}${6:, 74})',
-      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      label: 'param',
+      kind: monaco.languages.CompletionItemKind.Snippet,
+      insertText:
+        'p.${1:name} = param(${2:0.5}, ${3:0}, ${4:1}, ${5:0.01}${6:, 74})',
+      insertTextRules:
+        monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
       detail: 'Play mode用VSTパラメーターを宣言',
-      documentation: 'ホストからオートメーションでき、Play modeで自由に配置できるコントロールを作成します。', range, sortText: '0-param',
+      documentation:
+        'ホストからオートメーションでき、Play modeで自由に配置できるコントロールを作成します。',
+      range,
+      sortText: '0-param',
     });
+
     suggestions.push({
-      label: 'note entry', kind: monaco.languages.CompletionItemKind.Snippet,
-      insertText: 'fn note(in, p) -> out {\n\tattack = clamp(in.t / ${1:0.008}, 0, 1)\n\trelease = exp(-${2:6} * in.l)\n\tout.wave = in.s * in.vol * in.mexpr * attack * release * ${3|sin(TAU * in.freq * in.t),saw(in.freq, in.t),triangle(in.freq, in.t)|}\n\tout.pan = in.midi_pan\n\tout.l_limit = ${4:1s}\n}',
-      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-      detail: '演奏可能なボイスのひな形', range, sortText: '0-template',
+      label: 'mono program',
+      kind: monaco.languages.CompletionItemKind.Snippet,
+      insertText:
+        'note.out.layout = mono\n\nfn note(in, p) -> out {\n\tattack = clamp(in.t / ${1:0.008}, 0, 1)\n\trelease = exp(-${2:6} * in.l)\n\tout.wave = in.s * in.vol * in.mexpr * attack * release * ${3|sin(TAU * in.freq * in.t),saw(in.freq, in.t),triangle(in.freq, in.t)|}\n\tout.pan = in.midi_pan\n\tout.l_limit = ${4:1s}\n}',
+      insertTextRules:
+        monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      detail: 'mono voice のひな形',
+      range,
+      sortText: '0-template-mono',
+    });
+
+    suggestions.push({
+      label: 'stereo program',
+      kind: monaco.languages.CompletionItemKind.Snippet,
+      insertText:
+        'note.out.layout = stereo\n\nfn note(in, p) -> out {\n\tamp = in.s * in.vol * in.mexpr * ${1|sin(TAU * in.freq * in.t),saw(in.freq, in.t),triangle(in.freq, in.t)|}\n\tout.wave_l = amp * pan_l(in.midi_pan)\n\tout.wave_r = amp * pan_r(in.midi_pan)\n\tout.l_limit = ${2:1s}\n}',
+      insertTextRules:
+        monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      detail: 'stereo voice のひな形',
+      range,
+      sortText: '0-template-stereo',
     });
   }
+
   return { suggestions };
 }
 
 monaco.languages.registerCompletionItemProvider('synth-dsl', {
   triggerCharacters: ['.', '_', '('],
+
   provideCompletionItems(model, position) {
     return hierarchicalCompletions(model, position);
   },
@@ -326,47 +656,183 @@ monaco.languages.registerHoverProvider('synth-dsl', {
   provideHover(model, position) {
     const word = model.getWordAtPosition(position)?.word;
     if (!word) return null;
+
     const line = model.getLineContent(position.lineNumber);
-    const left = line.slice(0, position.column - 1).match(/[A-Za-z_][\w.]*$/)?.[0] || '';
-    const right = line.slice(position.column - 1).match(/^[A-Za-z0-9_.]*/)?.[0] || '';
+
+    const left =
+      line
+        .slice(0, position.column - 1)
+        .match(/[A-Za-z_][\w.]*$/)?.[0] || '';
+
+    const right =
+      line
+        .slice(position.column - 1)
+        .match(/^[A-Za-z0-9_.]*/)?.[0] || '';
+
     const qualified = (left + right) || word;
-    if (FUNCTION_DOCS[qualified]) return { contents: [{ value: `\`${FUNCTION_DOCS[qualified][0]}\`` }, { value: FUNCTION_DOCS[qualified][1] }] };
-    if (INPUT_DOCS[word]) return { contents: [{ value: `**${word}** — 実行時入力` }, { value: INPUT_DOCS[word] }] };
-    if (OUTPUT_DOCS[word]) return { contents: [{ value: `**${word}** — output` }, { value: OUTPUT_DOCS[word] }] };
-    if (qualified.startsWith('p.')) return { contents: [{ value: `**${qualified}** — ホストオートメーション対応パラメーター` }, { value: 'Play modeのコントロールを右クリックして表示形式と配置を変更できます。' }] };
+
+    if (FUNCTION_DOCS[qualified]) {
+      return {
+        contents: [
+          { value: `\`${FUNCTION_DOCS[qualified][0]}\`` },
+          { value: FUNCTION_DOCS[qualified][1] },
+        ],
+      };
+    }
+
+    if (INPUT_DOCS[word]) {
+      return {
+        contents: [
+          { value: `**${word}** — 実行時入力` },
+          { value: INPUT_DOCS[word] },
+        ],
+      };
+    }
+
+    if (OUTPUT_DOCS[word]) {
+      return {
+        contents: [
+          { value: `**${word}** — output` },
+          { value: OUTPUT_DOCS[word] },
+        ],
+      };
+    }
+
+    if (qualified.startsWith('p.')) {
+      return {
+        contents: [
+          {
+            value:
+              `**${qualified}** — ホストオートメーション対応パラメーター`,
+          },
+          {
+            value:
+              'Play modeのコントロールを右クリックして表示形式と配置を変更できます。',
+          },
+        ],
+      };
+    }
+
     return null;
   },
 });
 
 monaco.languages.registerSignatureHelpProvider('synth-dsl', {
-  signatureHelpTriggerCharacters: ['(', ','], signatureHelpRetriggerCharacters: [','],
+  signatureHelpTriggerCharacters: ['(', ','],
+  signatureHelpRetriggerCharacters: [','],
+
   provideSignatureHelp(model, position) {
-    const prefix = model.getValueInRange(new monaco.Range(position.lineNumber, 1, position.lineNumber, position.column));
-    const name = prefix.match(/([A-Za-z_][\w.]*)\s*\([^()]*$/)?.[1];
-    const entry = name === 'param' ? ['param(default, min, max, step, cc_link?)', 'p.nameとして先頭に宣言するVST parameter。'] : FUNCTION_DOCS[name];
+    const prefix = model.getValueInRange(
+      new monaco.Range(
+        position.lineNumber,
+        1,
+        position.lineNumber,
+        position.column,
+      ),
+    );
+
+    const name =
+      prefix.match(/([A-Za-z_][\w.]*)\s*\([^()]*$/)?.[1];
+
+    const entry = name === 'param'
+      ? [
+        'param(default, min, max, step, cc_link?)',
+        'p.nameとして先頭に宣言するVST parameter。',
+      ]
+      : FUNCTION_DOCS[name];
+
     if (!entry) return null;
-    const activeParameter = (prefix.slice(prefix.lastIndexOf('(') + 1).match(/,/g) || []).length;
-    const labels = entry[0].slice(entry[0].indexOf('(') + 1, -1).split(', ').filter(Boolean);
-    return { value: { signatures: [{ label: entry[0], documentation: entry[1], parameters: labels.map(label => ({ label })) }], activeSignature: 0, activeParameter }, dispose() {} };
+
+    const activeParameter = (
+      prefix
+        .slice(prefix.lastIndexOf('(') + 1)
+        .match(/,/g) || []
+    ).length;
+
+    const labels = entry[0]
+      .slice(entry[0].indexOf('(') + 1, -1)
+      .split(', ')
+      .filter(Boolean);
+
+    return {
+      value: {
+        signatures: [{
+          label: entry[0],
+          documentation: entry[1],
+          parameters: labels.map(label => ({ label })),
+        }],
+        activeSignature: 0,
+        activeParameter,
+      },
+      dispose() { },
+    };
   },
 });
 
 monaco.languages.registerCodeActionProvider('synth-dsl', {
   provideCodeActions(model, _range, context) {
     const actions = [];
+
     for (const marker of context.markers) {
-      const suggestion = marker.message.match(/Did you mean `([^`]+)`/i)?.[1];
-      const word = model.getWordAtPosition({ lineNumber: marker.startLineNumber, column: marker.startColumn });
-      if (suggestion) actions.push({
-        title: `「${suggestion}」に置き換える`, kind: 'quickfix', isPreferred: true,
-        edit: { edits: [{ resource: model.uri, versionId: model.getVersionId(), textEdit: { range: word ? new monaco.Range(marker.startLineNumber, word.startColumn, marker.startLineNumber, word.endColumn) : new monaco.Range(marker.startLineNumber, marker.startColumn, marker.endLineNumber, marker.endColumn), text: suggestion } }] },
+      const suggestion =
+        marker.message.match(/Did you mean `([^`]+)`/i)?.[1];
+
+      const word = model.getWordAtPosition({
+        lineNumber: marker.startLineNumber,
+        column: marker.startColumn,
       });
+
+      if (suggestion) {
+        actions.push({
+          title: `「${suggestion}」に置き換える`,
+          kind: 'quickfix',
+          isPreferred: true,
+          edit: {
+            edits: [{
+              resource: model.uri,
+              versionId: model.getVersionId(),
+              textEdit: {
+                range: word
+                  ? new monaco.Range(
+                    marker.startLineNumber,
+                    word.startColumn,
+                    marker.startLineNumber,
+                    word.endColumn,
+                  )
+                  : new monaco.Range(
+                    marker.startLineNumber,
+                    marker.startColumn,
+                    marker.endLineNumber,
+                    marker.endColumn,
+                  ),
+                text: suggestion,
+              },
+            }],
+          },
+        });
+      }
     }
-    return { actions, dispose() {} };
+
+    return {
+      actions,
+      dispose() { },
+    };
   },
 });
 
+// -----------------------------------------------------------------------------
+// UI runtime
+// -----------------------------------------------------------------------------
+
 const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+
+const clamp01 = value =>
+  Math.max(0, Math.min(1, Number(value) || 0));
+
+const cloneControls = controls =>
+  (controls || []).map(control => ({ ...control }));
+
 const app = $('#app');
 const presetSelect = $('#preset');
 const statusElement = $('#status');
@@ -375,801 +841,4285 @@ const diagnosticMessage = $('#diagnostic-message');
 const stage = $('#control-stage');
 const contextMenu = $('#context-menu');
 const scope = $('#scope');
-let initialized = false;
-let statePollInFlight = false;
-let editorDirty = false;
-let applyingRemote = false;
-let compileTimer = 0;
-let suggestTimer = 0;
-let lastGeneration = -1;
-let latestState = null;
-let currentMode = 'editor';
-let arranging = false;
-let layoutFingerprint = '';
-let pendingLayoutFingerprint = null;
-let pendingLayoutControls = null;
-let initialRepairJustApplied = false;
-let initialLayoutChecked = false;
-let interacting = false;
-let copiedParameter = null;
-let toastTimer = 0;
-let pendingPresetLoad = null;
-const CUSTOM_PRESET_STORAGE_KEY = 'code-synthesizer.custom-presets.v1';
-let factoryPresets = [];
-let customPresets = loadCustomPresetLibrary();
-let deletePresetArmed = '';
-let deletePresetTimer = 0;
 
-function send(message) { window.ipc?.postMessage?.(JSON.stringify(message)); }
+const CUSTOM_PRESET_STORAGE_KEY =
+  'code-synthesizer.custom-presets.v1';
+
+const POLL_INTERVAL_MS = 80;
+const SCOPE_INTERVAL_MS = 40;
+const COMPILE_DEBOUNCE_MS = 260;
+
+const ui = {
+  initialized: false,
+  pollInFlight: false,
+  latestState: null,
+  mode: 'editor',
+
+  endpoints: {
+    hasNote: null,
+  },
+
+  editor: {
+    applyingRemote: false,
+    dirty: false,
+    compileTimer: 0,
+    suggestTimer: 0,
+    submittedSource: null,
+    lastBackendSource: null,
+    deferredRemoteSource: null,
+    pendingLoad: null,
+  },
+
+  status: {
+    lastGeneration: -1,
+  },
+
+  layout: {
+    arranging: false,
+    interacting: false,
+    fingerprint: '',
+    pendingFingerprint: null,
+    pendingControls: null,
+    initialChecked: false,
+    initialRepairJustApplied: false,
+  },
+
+  presets: {
+    factory: [],
+    custom: [],
+    pendingConfirm: null,
+    deleteArmed: '',
+    deleteTimer: 0,
+  },
+
+  copiedParameter: null,
+  toastTimer: 0,
+};
+
+function send(message) {
+  window.ipc?.postMessage?.(JSON.stringify(message));
+}
+
 function showToast(message) {
-  const toast = $('#toast'); toast.textContent = message; toast.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.hidden = true; }, 1800);
+  const toast = $('#toast');
+  if (!toast) return;
+
+  toast.textContent = message;
+  toast.hidden = false;
+
+  clearTimeout(ui.toastTimer);
+
+  ui.toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 1800);
 }
-function loadCustomPresetLibrary() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CUSTOM_PRESET_STORAGE_KEY) || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(item => item && typeof item.name === 'string' && typeof item.source === 'string')
-      .slice(0, 100)
-      .map(item => ({
-        name: item.name.slice(0, 60),
-        source: item.source,
-        parameterValues: Array.isArray(item.parameterValues) ? item.parameterValues : [],
-        controls: Array.isArray(item.controls) ? item.controls : [],
-      }));
-  } catch (_error) {
-    return [];
+
+function openModal(id) {
+  const modal = $(id);
+  if (!modal) return;
+
+  modal.hidden = false;
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeModal(id) {
+  const modal = $(id);
+  if (!modal) return;
+
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function syncEndpointUi(source = editor.getValue()) {
+  const hasNote = hasEndpoint(String(source ?? ''), 'note');
+  const changed = ui.endpoints.hasNote !== hasNote;
+  ui.endpoints.hasNote = hasNote;
+
+  app.dataset.hasNote = hasNote ? 'true' : 'false';
+
+  const keyboardSection = $('.keyboard-section');
+  if (keyboardSection) keyboardSection.hidden = !hasNote;
+
+  const previewButton = $('#preview-button');
+  if (previewButton) previewButton.hidden = !hasNote;
+
+  const scopeNote = $('#scope-note');
+  if (scopeNote) scopeNote.hidden = !hasNote;
+
+  if (changed && !hasNote) {
+    releaseAllNotes();
+  }
+
+  if (changed && hasNote) {
+    requestAnimationFrame(() => buildKeyboard());
   }
 }
-function persistCustomPresetLibrary() {
-  try {
-    localStorage.setItem(CUSTOM_PRESET_STORAGE_KEY, JSON.stringify(customPresets));
-    return true;
-  } catch (_error) {
-    showToast('Custom presetを保存できませんでした');
-    return false;
-  }
-}
-function presetOptionValue(kind, name = '') { return `${kind}:${name}`; }
-function parsePresetOption(value) {
-  const separator = value.indexOf(':');
-  return {
-    kind: separator < 0 ? 'factory' : value.slice(0, separator),
-    name: separator < 0 ? value : value.slice(separator + 1),
-  };
-}
-function rebuildPresetOptions(presets = factoryPresets) {
-  factoryPresets = Array.isArray(presets) ? presets : [];
-  const fragment = document.createDocumentFragment();
-  const categories = new Map();
-  for (const preset of factoryPresets) {
-    const category = preset.category || 'Factory';
-    if (!categories.has(category)) categories.set(category, []);
-    categories.get(category).push(preset);
-  }
-  for (const [category, presetsInCategory] of categories) {
-    const group = document.createElement('optgroup');
-    group.label = category;
-    for (const preset of presetsInCategory) {
-      group.append(Object.assign(document.createElement('option'), {
-        value: presetOptionValue('factory', preset.name),
-        textContent: preset.name,
-      }));
+
+// -----------------------------------------------------------------------------
+// Editor source ownership
+// -----------------------------------------------------------------------------
+// The editor owns source text while the user is editing. Polling never calls
+// setValue() just because the backend is one poll behind. Backend -> editor
+// replacement is permitted only for initial load, an explicit preset load, or
+// a host-side state change while the editor is clean and unfocused.
+
+function replaceEditorSource(
+  source,
+  {
+    clean = true,
+    resetView = false,
+  } = {},
+) {
+  const next = String(source ?? '');
+  const model = editor.getModel();
+
+  if (!model) return;
+
+  if (model.getValue() !== next) {
+    const viewState = resetView
+      ? null
+      : editor.saveViewState();
+
+    ui.editor.applyingRemote = true;
+
+    try {
+      editor.setValue(next);
+    } finally {
+      ui.editor.applyingRemote = false;
     }
-    fragment.append(group);
+
+    if (resetView) {
+      editor.setPosition({
+        lineNumber: 1,
+        column: 1,
+      });
+
+      editor.setScrollTop(0);
+      editor.setScrollLeft(0);
+    } else if (viewState) {
+      editor.restoreViewState(viewState);
+    }
   }
-  const customGroup = document.createElement('optgroup');
-  customGroup.label = 'Custom';
-  customGroup.append(Object.assign(document.createElement('option'), {
-    value: presetOptionValue('unsaved'),
-    textContent: 'Unsaved Code',
-  }));
-  for (const preset of customPresets) {
-    customGroup.append(Object.assign(document.createElement('option'), {
-      value: presetOptionValue('custom', preset.name),
-      textContent: preset.name,
-    }));
-  }
-  fragment.append(customGroup);
-  presetSelect.replaceChildren(fragment);
-}
-function selectionForState(state) {
-  if (state.selectedPreset && state.selectedPreset !== 'Custom') {
-    return presetOptionValue('factory', state.selectedPreset);
-  }
-  const saved = customPresets.find(preset => preset.source === state.source);
-  return saved ? presetOptionValue('custom', saved.name) : presetOptionValue('unsaved');
-}
-function syncPresetSelection(state) {
-  const value = selectionForState(state);
-  if ([...presetSelect.options].some(option => option.value === value)) presetSelect.value = value;
-  const selected = parsePresetOption(presetSelect.value);
-  const custom = selected.kind === 'custom';
-  if (custom && document.activeElement !== $('#custom-preset-name')) {
-    $('#custom-preset-name').value = selected.name;
-  }
-  $('#delete-custom-preset').disabled = !custom;
-  if (!custom) {
-    deletePresetArmed = '';
-    $('#delete-custom-preset').textContent = 'Delete';
+
+  syncEndpointUi(next);
+
+  if (clean) {
+    ui.editor.dirty = false;
   }
 }
+
+function scheduleCompile() {
+  clearTimeout(ui.editor.compileTimer);
+
+  statusElement.className = 'compile-status pending';
+  statusElement.textContent = 'Compiling…';
+
+  diagnostic.className = 'editor-foot';
+  diagnosticMessage.textContent = '式を確認中…';
+
+  ui.editor.compileTimer = setTimeout(
+    () => compileNow(false),
+    COMPILE_DEBOUNCE_MS,
+  );
+}
+
 function compileNow(preview = false) {
-  clearTimeout(compileTimer); statusElement.className = 'compile-status pending'; statusElement.textContent = 'Compiling…';
-  send({ cmd: 'setExpression', source: editor.getValue() }); if (preview) previewNote();
+  clearTimeout(ui.editor.compileTimer);
+
+  const source = editor.getValue();
+
+  ui.editor.submittedSource = source;
+
+  statusElement.className = 'compile-status pending';
+  statusElement.textContent = 'Compiling…';
+
+  send({
+    cmd: 'setExpression',
+    source,
+  });
+
+  if (preview) {
+    previewNote();
+  }
+}
+
+function remoteLoadIsReady(state) {
+  const pending = ui.editor.pendingLoad;
+
+  if (!pending) return false;
+  if (pending.kind !== 'factory') return true;
+
+  const selected =
+    state.selectedPreset === pending.name;
+
+  const generation =
+    Number(state.status?.generation ?? -1);
+
+  return selected && (
+    generation > pending.generationAtRequest ||
+    state.source !== pending.sourceAtRequest
+  );
+}
+
+function reconcileEditorSource(state) {
+  const backendSource = String(state.source ?? '');
+  const currentSource = editor.getValue();
+
+  if (!ui.initialized) {
+    replaceEditorSource(
+      backendSource,
+      {
+        clean: true,
+        resetView: true,
+      },
+    );
+
+    ui.editor.lastBackendSource = backendSource;
+    ui.editor.deferredRemoteSource = null;
+
+    return;
+  }
+
+  // Explicit factory preset load: this is the only normal polling path allowed
+  // to replace a focused editor.
+  if (
+    ui.editor.pendingLoad &&
+    remoteLoadIsReady(state)
+  ) {
+    replaceEditorSource(
+      backendSource,
+      {
+        clean: true,
+        resetView: true,
+      },
+    );
+
+    ui.editor.pendingLoad = null;
+    ui.editor.submittedSource = null;
+    ui.editor.lastBackendSource = backendSource;
+    ui.editor.deferredRemoteSource = null;
+
+    return;
+  }
+
+  // Acknowledge our own submitted source without touching Monaco.
+  if (backendSource === currentSource) {
+    ui.editor.lastBackendSource = backendSource;
+    ui.editor.deferredRemoteSource = null;
+    ui.editor.submittedSource = null;
+    ui.editor.dirty = false;
+
+    return;
+  }
+
+  if (
+    ui.editor.submittedSource &&
+    backendSource === ui.editor.submittedSource
+  ) {
+    ui.editor.lastBackendSource = backendSource;
+    ui.editor.submittedSource = null;
+
+    // The user may already have typed more. Never roll back to the submitted
+    // snapshot in that case.
+    return;
+  }
+
+  if (
+    backendSource === ui.editor.lastBackendSource
+  ) {
+    return;
+  }
+
+  // A genuinely external source change (e.g. project/state restore). If local
+  // editing is active, remember it but never overwrite the user's buffer.
+  if (
+    ui.editor.dirty ||
+    editor.hasTextFocus()
+  ) {
+    ui.editor.deferredRemoteSource = backendSource;
+    return;
+  }
+
+  replaceEditorSource(
+    backendSource,
+    {
+      clean: true,
+      resetView: false,
+    },
+  );
+
+  ui.editor.lastBackendSource = backendSource;
+  ui.editor.deferredRemoteSource = null;
 }
 
 editor.onDidChangeModelContent(event => {
-  if (!initialized || applyingRemote) return;
-  editorDirty = true;
-  if (editor.hasTextFocus() && event.changes.some(change => change.text.length === 1 && /[A-Za-z_.]/.test(change.text))) {
-    clearTimeout(suggestTimer);
-    suggestTimer = setTimeout(() => editor.trigger('keyboard', 'editor.action.triggerSuggest', {}), 0);
+  if (
+    !ui.initialized ||
+    ui.editor.applyingRemote
+  ) {
+    return;
   }
-  clearTimeout(compileTimer); statusElement.className = 'compile-status pending'; statusElement.textContent = 'Compiling…';
-  diagnostic.className = 'editor-foot'; diagnosticMessage.textContent = '式を確認中…';
-  compileTimer = setTimeout(() => compileNow(false), 260);
-});
-editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => compileNow(true));
-editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => compileNow(false));
-$('#compile-button').addEventListener('click', () => compileNow(false));
-$('#preview-button').addEventListener('click', () => compileNow(true));
 
-function setEditorSource(source, clean = false) {
-  applyingRemote = true; editor.setValue(source); editor.setScrollTop(0); applyingRemote = false;
-  if (clean) editorDirty = false;
-}
+  ui.editor.dirty = true;
+  ui.editor.deferredRemoteSource = null;
+  syncEndpointUi(editor.getValue());
+
+  if (
+    editor.hasTextFocus() &&
+    event.changes.some(
+      change =>
+        change.text.length === 1 &&
+        /[A-Za-z_.]/.test(change.text),
+    )
+  ) {
+    clearTimeout(ui.editor.suggestTimer);
+
+    ui.editor.suggestTimer = setTimeout(
+      () =>
+        editor.trigger(
+          'keyboard',
+          'editor.action.triggerSuggest',
+          {},
+        ),
+      0,
+    );
+  }
+
+  scheduleCompile();
+});
+
+editor.addCommand(
+  monaco.KeyMod.CtrlCmd |
+  monaco.KeyCode.Enter,
+  () => compileNow(true),
+);
+
+editor.addCommand(
+  monaco.KeyMod.CtrlCmd |
+  monaco.KeyCode.KeyS,
+  () => compileNow(false),
+);
+
+$('#compile-button').addEventListener(
+  'click',
+  () => compileNow(false),
+);
+
+$('#preview-button').addEventListener(
+  'click',
+  () => compileNow(true),
+);
+
+// -----------------------------------------------------------------------------
+// Status / host state polling
+// -----------------------------------------------------------------------------
+
 function renderStatus(status) {
-  if (status.generation < lastGeneration) return;
-  lastGeneration = status.generation;
-  const warnings = Array.isArray(status.warnings) ? status.warnings : [];
-  const level = status.ok ? (warnings.length ? 'warning' : 'ok') : 'error';
-  statusElement.className = `compile-status ${level}`;
+  if (!status) return;
+
+  const generation =
+    Number(status.generation ?? -1);
+
+  if (
+    generation <
+    ui.status.lastGeneration
+  ) {
+    return;
+  }
+
+  ui.status.lastGeneration = generation;
+
+  const warnings =
+    Array.isArray(status.warnings)
+      ? status.warnings
+      : [];
+
+  const level = status.ok
+    ? (
+      warnings.length
+        ? 'warning'
+        : 'ok'
+    )
+    : 'error';
+
+  const parallel =
+    Boolean(status.parallelVoiceSafe);
+
+  statusElement.className =
+    `compile-status ${level}`;
+
   statusElement.textContent = status.ok
-    ? `● Compiled · ${status.parallelVoiceSafe ? 'Parallel' : 'Serial'} · Generation ${status.generation}${warnings.length ? ` · ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}`
+    ? `● Compiled · ${parallel
+      ? 'Parallel'
+      : 'Serial'
+    } · Generation ${generation}${warnings.length
+      ? ` · ${warnings.length} warning${warnings.length === 1
+        ? ''
+        : 's'
+      }`
+      : ''
+    }`
     : `● ${status.line}:${status.column} ${status.message}`;
-  diagnostic.className = `editor-foot ${level}`;
+
+  diagnostic.className =
+    `editor-foot ${level}`;
+
   diagnosticMessage.textContent = status.ok
-    ? (warnings[0] ? `Warning · ${warnings[0]}` : (status.parallelVoiceSafe ? 'Ready · worker parallel evaluation enabled' : 'Ready · serial JIT evaluation'))
-    : `${status.line}:${status.column} ${status.message}${status.hint ? ` — ${status.hint}` : ''}`;
-  diagnosticMessage.title = status.ok ? warnings.join('\n') : (status.hint || '');
-  const markerMessage = status.hint ? `${status.message}\nHint: ${status.hint}` : status.message;
+    ? (
+      warnings[0] ||
+      (
+        parallel
+          ? 'Ready · worker parallel evaluation enabled'
+          : 'Ready · serial JIT evaluation'
+      )
+    )
+    : `${status.line}:${status.column} ${status.message}${status.hint
+      ? ` — ${status.hint}`
+      : ''
+    }`;
+
+  diagnosticMessage.title = status.ok
+    ? warnings.join('\n')
+    : (status.hint || '');
+
   const markers = status.ok
-    ? (warnings.length ? [{
-      startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 2,
-      message: warnings.join('\n'), severity: monaco.MarkerSeverity.Warning, source: 'Code Synthesizer',
-    }] : [])
+    ? (
+      warnings.length
+        ? [{
+          startLineNumber: 1,
+          startColumn: 1,
+          endLineNumber: 1,
+          endColumn: 2,
+          message: warnings.join('\n'),
+          severity:
+            monaco.MarkerSeverity.Warning,
+          source: 'Code Synthesizer',
+        }]
+        : []
+    )
     : [{
-      startLineNumber: Math.max(1, status.line), startColumn: Math.max(1, status.column), endLineNumber: Math.max(1, status.line),
-      endColumn: Math.max(2, status.column + 1), message: markerMessage, severity: monaco.MarkerSeverity.Error, source: 'Code Synthesizer',
+      startLineNumber:
+        Math.max(
+          1,
+          Number(status.line) || 1,
+        ),
+
+      startColumn:
+        Math.max(
+          1,
+          Number(status.column) || 1,
+        ),
+
+      endLineNumber:
+        Math.max(
+          1,
+          Number(status.line) || 1,
+        ),
+
+      endColumn:
+        Math.max(
+          2,
+          (Number(status.column) || 1) + 1,
+        ),
+
+      message: status.hint
+        ? `${status.message}\nHint: ${status.hint}`
+        : status.message,
+
+      severity:
+        monaco.MarkerSeverity.Error,
+
+      source:
+        'Code Synthesizer',
     }];
-  monaco.editor.setModelMarkers(editor.getModel(), 'synth-compiler', markers);
+
+  monaco.editor.setModelMarkers(
+    editor.getModel(),
+    'synth-compiler',
+    markers,
+  );
 }
 
-diagnosticMessage.addEventListener('click', () => {
-  const status = latestState?.status;
-  if (!status?.ok) { editor.setPosition({ lineNumber: Math.max(1, status.line), column: Math.max(1, status.column) }); editor.focus(); }
-});
+diagnosticMessage.addEventListener(
+  'click',
+  () => {
+    const status =
+      ui.latestState?.status;
 
-function setMode(mode, persist = true) {
-  currentMode = mode === 'play' ? 'play' : 'editor'; app.dataset.mode = currentMode;
-  document.querySelectorAll('.mode-button').forEach(button => button.classList.toggle('active', button.dataset.mode === currentMode));
-  if (persist) send({ cmd: 'setMode', mode: currentMode });
-  setTimeout(() => editor.layout(), 0);
+    if (status?.ok !== false) {
+      return;
+    }
+
+    editor.setPosition({
+      lineNumber:
+        Math.max(
+          1,
+          Number(status.line) || 1,
+        ),
+
+      column:
+        Math.max(
+          1,
+          Number(status.column) || 1,
+        ),
+    });
+
+    editor.focus();
+  },
+);
+
+function setMode(
+  mode,
+  persist = true,
+) {
+  ui.mode =
+    mode === 'play'
+      ? 'play'
+      : 'editor';
+
+  app.dataset.mode = ui.mode;
+
+  $$('.mode-button').forEach(
+    button => {
+      button.classList.toggle(
+        'active',
+        button.dataset.mode === ui.mode,
+      );
+    },
+  );
+
+  if (persist) {
+    send({
+      cmd: 'setMode',
+      mode: ui.mode,
+    });
+  }
+
+  requestAnimationFrame(
+    () => editor.layout(),
+  );
 }
-document.querySelectorAll('.mode-button').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
+
+$$('.mode-button').forEach(
+  button => {
+    button.addEventListener(
+      'click',
+      () =>
+        setMode(
+          button.dataset.mode,
+        ),
+    );
+  },
+);
 
 async function pollState() {
-  if (statePollInFlight) return;
-  statePollInFlight = true;
+  if (ui.pollInFlight) {
+    return;
+  }
+
+  ui.pollInFlight = true;
+
   try {
-    const response = await fetch('./api/state', { cache: 'no-store' });
-    if (!response.ok) throw new Error(String(response.status));
-    const state = await response.json();
-    // ドラッグ中に到着した古いpoll結果で、編集中の位置・サイズを上書きしない。
-    if (interacting && latestState?.controls) state.controls = latestState.controls;
-    latestState = state;
-    if (!initialized) {
-      rebuildPresetOptions(state.presets);
-      setEditorSource(state.source, true); setMode(state.mode || 'editor', false); initialized = true;
-    } else if (state.selectedPreset !== 'Custom' && editor.getValue() !== state.source) {
-      setEditorSource(state.source, true);
+    const response =
+      await fetch(
+        './api/state',
+        {
+          cache: 'no-store',
+        },
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `state HTTP ${response.status}`,
+      );
     }
-    syncPresetSelection(state); renderStatus(state.status);
-    $('#sample-rate-badge').textContent = `${Math.round(state.sampleRate || 48000).toLocaleString()} Hz`;
-    $('#voice-badge').textContent = `${state.activeVoices} voice${state.activeVoices === 1 ? '' : 's'}`;
-    $('#scope-note').textContent = midiName(state.previewNote);
-    syncMidiPreview(state.activeNotes || [], state.releaseNotes || []);
-    if (!interacting) syncControls(state.parameters || [], state.controls || []);
-  } catch (_error) {
-    statusElement.className = 'compile-status error'; statusElement.textContent = 'UIブリッジを利用できません';
+
+    const state =
+      await response.json();
+
+    // Preserve local layout while a pointer interaction is in progress.
+    if (
+      ui.layout.interacting &&
+      ui.latestState?.controls
+    ) {
+      state.controls =
+        cloneControls(
+          ui.latestState.controls,
+        );
+    }
+
+    reconcileEditorSource(state);
+
+    ui.latestState = state;
+
+    if (!ui.initialized) {
+      rebuildPresetOptions(
+        state.presets,
+      );
+
+      setMode(
+        state.mode || 'editor',
+        false,
+      );
+
+      ui.initialized = true;
+    }
+
+    syncPresetSelection(state);
+    renderStatus(state.status);
+
+    $('#sample-rate-badge').textContent =
+      `${Math.round(
+        state.sampleRate || 48000,
+      ).toLocaleString()
+      } Hz`;
+
+    $('#voice-badge').textContent =
+      `${state.activeVoices || 0
+      } voice${state.activeVoices === 1
+        ? ''
+        : 's'
+      }`;
+
+    $('#scope-note').textContent =
+      midiName(
+        state.previewNote ?? 60,
+      );
+
+    syncMidiPreview(
+      state.activeNotes || [],
+      state.releaseNotes || [],
+    );
+
+    if (!ui.layout.interacting) {
+      syncControls(
+        state.parameters || [],
+        state.controls || [],
+      );
+    }
+  } catch (error) {
+    statusElement.className =
+      'compile-status error';
+
+    statusElement.textContent =
+      'UIブリッジを利用できません';
+
+    console.error(error);
   } finally {
-    statePollInFlight = false;
+    ui.pollInFlight = false;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Presets
+// -----------------------------------------------------------------------------
+
+function loadCustomPresetLibrary() {
+  try {
+    const parsed =
+      JSON.parse(
+        localStorage.getItem(
+          CUSTOM_PRESET_STORAGE_KEY,
+        ) || '[]',
+      );
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        item =>
+          item &&
+          typeof item.name === 'string' &&
+          typeof item.source === 'string',
+      )
+      .slice(0, 100)
+      .map(item => ({
+        name:
+          item.name.slice(0, 60),
+
+        source:
+          item.source,
+
+        parameterValues:
+          Array.isArray(
+            item.parameterValues,
+          )
+            ? item.parameterValues
+            : [],
+
+        controls:
+          Array.isArray(
+            item.controls,
+          )
+            ? item.controls
+            : [],
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function persistCustomPresetLibrary() {
+  try {
+    localStorage.setItem(
+      CUSTOM_PRESET_STORAGE_KEY,
+      JSON.stringify(
+        ui.presets.custom,
+      ),
+    );
+
+    return true;
+  } catch {
+    showToast(
+      'Custom presetを保存できませんでした',
+    );
+
+    return false;
+  }
+}
+
+ui.presets.custom =
+  loadCustomPresetLibrary();
+
+function presetOptionValue(
+  kind,
+  name = '',
+) {
+  return `${kind}:${name}`;
+}
+
+function parsePresetOption(value) {
+  const text =
+    String(value || '');
+
+  const separator =
+    text.indexOf(':');
+
+  return {
+    kind:
+      separator < 0
+        ? 'factory'
+        : text.slice(
+          0,
+          separator,
+        ),
+
+    name:
+      separator < 0
+        ? text
+        : text.slice(
+          separator + 1,
+        ),
+  };
+}
+
+function rebuildPresetOptions(
+  presets = ui.presets.factory,
+) {
+  ui.presets.factory =
+    Array.isArray(presets)
+      ? presets
+      : [];
+
+  const fragment =
+    document.createDocumentFragment();
+
+  const categories =
+    new Map();
+
+  for (
+    const preset
+    of ui.presets.factory
+  ) {
+    const category =
+      preset.category ||
+      'Factory';
+
+    if (
+      !categories.has(category)
+    ) {
+      categories.set(
+        category,
+        [],
+      );
+    }
+
+    categories
+      .get(category)
+      .push(preset);
+  }
+
+  for (
+    const [category, items]
+    of categories
+  ) {
+    const group =
+      document.createElement(
+        'optgroup',
+      );
+
+    group.label = category;
+
+    for (const preset of items) {
+      group.append(
+        Object.assign(
+          document.createElement(
+            'option',
+          ),
+          {
+            value:
+              presetOptionValue(
+                'factory',
+                preset.name,
+              ),
+
+            textContent:
+              preset.name,
+          },
+        ),
+      );
+    }
+
+    fragment.append(group);
+  }
+
+  const customGroup =
+    document.createElement(
+      'optgroup',
+    );
+
+  customGroup.label = 'Custom';
+
+  customGroup.append(
+    Object.assign(
+      document.createElement(
+        'option',
+      ),
+      {
+        value:
+          presetOptionValue(
+            'unsaved',
+          ),
+
+        textContent:
+          'Unsaved Code',
+      },
+    ),
+  );
+
+  for (
+    const preset
+    of ui.presets.custom
+  ) {
+    customGroup.append(
+      Object.assign(
+        document.createElement(
+          'option',
+        ),
+        {
+          value:
+            presetOptionValue(
+              'custom',
+              preset.name,
+            ),
+
+          textContent:
+            preset.name,
+        },
+      ),
+    );
+  }
+
+  fragment.append(customGroup);
+  presetSelect.replaceChildren(fragment);
+}
+
+function selectionForState(state) {
+  if (ui.editor.dirty) {
+    return presetOptionValue(
+      'unsaved',
+    );
+  }
+
+  const custom =
+    ui.presets.custom.find(
+      preset =>
+        preset.source ===
+        editor.getValue(),
+    );
+
+  if (custom) {
+    return presetOptionValue(
+      'custom',
+      custom.name,
+    );
+  }
+
+  if (
+    state.selectedPreset &&
+    state.selectedPreset !== 'Custom'
+  ) {
+    return presetOptionValue(
+      'factory',
+      state.selectedPreset,
+    );
+  }
+
+  return presetOptionValue(
+    'unsaved',
+  );
+}
+
+function syncPresetSelection(state) {
+  const value =
+    selectionForState(state);
+
+  if (
+    [...presetSelect.options]
+      .some(
+        option =>
+          option.value === value,
+      )
+  ) {
+    presetSelect.value = value;
+  }
+
+  const selected =
+    parsePresetOption(
+      presetSelect.value,
+    );
+
+  const custom =
+    selected.kind === 'custom';
+
+  const nameInput =
+    $('#custom-preset-name');
+
+  const deleteButton =
+    $('#delete-custom-preset');
+
+  if (
+    custom &&
+    document.activeElement !==
+    nameInput
+  ) {
+    nameInput.value =
+      selected.name;
+  }
+
+  deleteButton.disabled =
+    !custom;
+
+  if (!custom) {
+    ui.presets.deleteArmed = '';
+    deleteButton.textContent =
+      'Delete';
   }
 }
 
 function presetRequest(value) {
-  const parsed = parsePresetOption(value);
-  if (parsed.kind === 'factory') {
-    return factoryPresets.some(preset => preset.name === parsed.name)
-      ? { kind: 'factory', name: parsed.name, label: parsed.name }
+  const parsed =
+    parsePresetOption(value);
+
+  if (
+    parsed.kind === 'factory'
+  ) {
+    return ui.presets.factory
+      .some(
+        preset =>
+          preset.name ===
+          parsed.name,
+      )
+      ? {
+        kind: 'factory',
+        name: parsed.name,
+        label: parsed.name,
+      }
       : null;
   }
-  if (parsed.kind === 'custom') {
-    const preset = customPresets.find(candidate => candidate.name === parsed.name);
-    return preset ? { kind: 'custom', name: preset.name, label: preset.name, source: preset.source, parameterValues: preset.parameterValues, controls: preset.controls } : null;
+
+  if (
+    parsed.kind === 'custom'
+  ) {
+    const preset =
+      ui.presets.custom.find(
+        candidate =>
+          candidate.name ===
+          parsed.name,
+      );
+
+    return preset
+      ? {
+        kind: 'custom',
+        name: preset.name,
+        label: preset.name,
+        source: preset.source,
+        parameterValues:
+          preset.parameterValues,
+        controls:
+          preset.controls,
+      }
+      : null;
   }
+
   return null;
 }
-function performPresetLoad(request, switchToEditor = false) {
+
+function resetLayoutSyncState() {
+  ui.layout.initialChecked =
+    false;
+
+  ui.layout.initialRepairJustApplied =
+    false;
+
+  ui.layout.fingerprint =
+    '';
+
+  ui.layout.pendingFingerprint =
+    null;
+
+  ui.layout.pendingControls =
+    null;
+}
+
+function performPresetLoad(
+  request,
+  switchToEditor = false,
+) {
   if (!request) return;
-  editorDirty = false; initialLayoutChecked = false; initialRepairJustApplied = false;
-  layoutFingerprint = ''; pendingLayoutFingerprint = null; pendingLayoutControls = null;
-  if (request.kind === 'custom') {
-    setEditorSource(request.source, true);
-    send({ cmd: 'loadCustomPreset', source: request.source, parameterValues: request.parameterValues || [], controls: request.controls || [] });
+
+  resetLayoutSyncState();
+
+  clearTimeout(
+    ui.editor.compileTimer,
+  );
+
+  if (
+    request.kind === 'custom'
+  ) {
+    replaceEditorSource(
+      request.source,
+      {
+        clean: true,
+        resetView: true,
+      },
+    );
+
+    ui.editor.lastBackendSource =
+      null;
+
+    ui.editor.pendingLoad =
+      null;
+
+    send({
+      cmd: 'loadCustomPreset',
+      source: request.source,
+      parameterValues:
+        request.parameterValues ||
+        [],
+      controls:
+        request.controls ||
+        [],
+    });
   } else {
-    send({ cmd: 'loadPreset', name: request.name });
+    ui.editor.pendingLoad = {
+      kind: 'factory',
+      name: request.name,
+      generationAtRequest:
+        Number(
+          ui.latestState
+            ?.status
+            ?.generation ?? -1,
+        ),
+      sourceAtRequest:
+        String(
+          ui.latestState
+            ?.source ?? '',
+        ),
+    };
+
+    send({
+      cmd: 'loadPreset',
+      name: request.name,
+    });
   }
-  $('#custom-preset-name').value = request.kind === 'custom' ? request.name : '';
-  if (switchToEditor) setMode('editor');
+
+  $('#custom-preset-name').value =
+    request.kind === 'custom'
+      ? request.name
+      : '';
+
+  if (switchToEditor) {
+    setMode('editor');
+  }
 }
+
 function closePresetConfirm() {
-  const modal = $('#preset-confirm');
-  modal.hidden = true; modal.setAttribute('aria-hidden', 'true'); pendingPresetLoad = null;
-  if (latestState) syncPresetSelection(latestState);
+  closeModal(
+    '#preset-confirm',
+  );
+
+  ui.presets.pendingConfirm =
+    null;
+
+  if (ui.latestState) {
+    syncPresetSelection(
+      ui.latestState,
+    );
+  }
 }
-function openPresetConfirm(request, switchToEditor) {
-  pendingPresetLoad = { request, switchToEditor };
-  $('#preset-confirm-name').textContent = request.label;
-  const modal = $('#preset-confirm');
-  modal.hidden = false; modal.setAttribute('aria-hidden', 'false');
-  if (latestState) syncPresetSelection(latestState);
-  setTimeout(() => $('#confirm-preset-load').focus(), 0);
+
+function openPresetConfirm(
+  request,
+  switchToEditor,
+) {
+  ui.presets.pendingConfirm = {
+    request,
+    switchToEditor,
+  };
+
+  $('#preset-confirm-name')
+    .textContent =
+    request.label;
+
+  openModal(
+    '#preset-confirm',
+  );
+
+  setTimeout(
+    () =>
+      $('#confirm-preset-load')
+        .focus(),
+    0,
+  );
 }
-function loadPreset(value, switchToEditor = false) {
-  const normalized = value.includes(':') ? value : presetOptionValue('factory', value);
-  const request = presetRequest(normalized);
+
+function loadPreset(
+  value,
+  switchToEditor = false,
+) {
+  const normalized =
+    String(value).includes(':')
+      ? value
+      : presetOptionValue(
+        'factory',
+        value,
+      );
+
+  const request =
+    presetRequest(normalized);
+
   if (!request) {
-    if (latestState) syncPresetSelection(latestState);
-    return;
-  }
-  if (editorDirty) { openPresetConfirm(request, switchToEditor); return; }
-  performPresetLoad(request, switchToEditor);
-}
-presetSelect.addEventListener('change', () => {
-  const selected = parsePresetOption(presetSelect.value);
-  if (selected.kind === 'custom') $('#custom-preset-name').value = selected.name;
-  loadPreset(presetSelect.value);
-});
-$('#load-preset').addEventListener('click', () => loadPreset(presetSelect.value));
-$('#cancel-preset-load').addEventListener('click', closePresetConfirm);
-$('#confirm-preset-load').addEventListener('click', () => {
-  const request = pendingPresetLoad;
-  closePresetConfirm();
-  if (request) performPresetLoad(request.request, request.switchToEditor);
-});
-$('#preset-confirm').addEventListener('pointerdown', event => {
-  if (event.target.id === 'preset-confirm') closePresetConfirm();
-});
-
-$('#save-custom-preset').addEventListener('click', () => {
-  const name = $('#custom-preset-name').value.trim();
-  if (!name) {
-    showToast('Preset名を入力してください');
-    $('#custom-preset-name').focus();
-    return;
-  }
-  const source = editor.getValue();
-  const parameterValues = (latestState?.parameters || []).map(parameter => ({
-    name: parameter.name,
-    normalized: parameter.normalized,
-  }));
-  const controls = (latestState?.controls || []).map(control => ({ ...control }));
-  const existing = customPresets.find(preset => preset.name === name);
-  if (existing) Object.assign(existing, { source, parameterValues, controls });
-  else customPresets.push({ name, source, parameterValues, controls });
-  customPresets.sort((left, right) => left.name.localeCompare(right.name, 'ja'));
-  if (!persistCustomPresetLibrary()) return;
-  rebuildPresetOptions();
-  presetSelect.value = presetOptionValue('custom', name);
-  $('#delete-custom-preset').disabled = false;
-  compileNow(false);
-  editorDirty = false;
-  showToast(existing ? 'Custom presetを更新しました' : 'Custom presetを保存しました');
-});
-
-$('#delete-custom-preset').addEventListener('click', () => {
-  const selected = parsePresetOption(presetSelect.value);
-  if (selected.kind !== 'custom') return;
-  const button = $('#delete-custom-preset');
-  if (deletePresetArmed !== selected.name) {
-    deletePresetArmed = selected.name;
-    button.textContent = 'Confirm delete';
-    clearTimeout(deletePresetTimer);
-    deletePresetTimer = setTimeout(() => {
-      deletePresetArmed = '';
-      button.textContent = 'Delete';
-    }, 3000);
-    return;
-  }
-  customPresets = customPresets.filter(preset => preset.name !== selected.name);
-  if (!persistCustomPresetLibrary()) return;
-  clearTimeout(deletePresetTimer);
-  deletePresetArmed = '';
-  rebuildPresetOptions();
-  presetSelect.value = presetOptionValue('unsaved');
-  $('#custom-preset-name').value = '';
-  button.textContent = 'Delete';
-  button.disabled = true;
-  showToast('Custom presetを削除しました');
-});
-
-function decimalsFor(step) { if (!step) return 3; if (step >= 1) return 0; return Math.min(4, Math.max(1, Math.ceil(-Math.log10(step)))); }
-function normalizedDefault(spec) { return Math.max(0, Math.min(1, (spec.default - spec.min) / (spec.max - spec.min))); }
-function currentSpec(index) { return latestState?.parameters?.find(parameter => parameter.index === index); }
-function displayValue(spec, normalized) {
-  let value = spec.min + normalized * (spec.max - spec.min);
-  if (spec.step > 0) value = spec.min + Math.round((value - spec.min) / spec.step) * spec.step;
-  return value.toFixed(decimalsFor(spec.step));
-}
-
-function syncControls(parameters, controls) {
-  if (!initialLayoutChecked && controls.length > 1) {
-    initialLayoutChecked = true;
-    const overlaps = controls.some((left, leftIndex) => controls.slice(leftIndex + 1).some(right =>
-      left.x < right.x + right.width && left.x + left.width > right.x &&
-      left.y < right.y + right.height && left.y + left.height > right.y));
-    if (overlaps) {
-      const columns = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(controls.length))));
-      const width = Math.min(22, 96 / columns);
-      controls.forEach((control, index) => {
-        const column = index % columns; const row = Math.floor(index / columns);
-        Object.assign(control, { x: 2 + column * (width + 2), y: 4 + row * 28, width, height: 22 });
-      });
-      pendingLayoutControls = controls.map(control => ({ ...control }));
-      pendingLayoutFingerprint = JSON.stringify(controls.map(control => [control.name, control.kind, control.x, control.y, control.width, control.height]));
-      layoutFingerprint = ''; initialRepairJustApplied = true;
-      send({ cmd: 'setLayout', controls: pendingLayoutControls });
+    if (ui.latestState) {
+      syncPresetSelection(
+        ui.latestState,
+      );
     }
+
+    return;
   }
-  let fingerprint = JSON.stringify(controls.map(control => [control.name, control.kind, control.x, control.y, control.width, control.height]));
-  if (pendingLayoutFingerprint && fingerprint !== pendingLayoutFingerprint && pendingLayoutControls) {
-    controls = pendingLayoutControls.map(control => ({ ...control }));
-    latestState.controls = controls;
-    fingerprint = pendingLayoutFingerprint;
-  } else if (pendingLayoutFingerprint === fingerprint) {
-    if (initialRepairJustApplied) initialRepairJustApplied = false;
-    else { pendingLayoutFingerprint = null; pendingLayoutControls = null; }
+
+  if (ui.editor.dirty) {
+    openPresetConfirm(
+      request,
+      switchToEditor,
+    );
+
+    return;
   }
-  if (fingerprint !== layoutFingerprint) { layoutFingerprint = fingerprint; renderControls(parameters, controls); }
-  for (const spec of parameters) updateControlValue(spec.index, spec.normalized, spec);
-  $('#empty-controls').hidden = parameters.length > 0;
-  $('#parameter-count').textContent = `${parameters.length} parameter${parameters.length === 1 ? '' : 's'}`;
+
+  performPresetLoad(
+    request,
+    switchToEditor,
+  );
 }
 
-function renderControls(parameters, controls) {
-  stage.querySelectorAll('.parameter-control').forEach(element => element.remove());
-  const byName = new Map(parameters.map(parameter => [parameter.name, parameter]));
-  for (const layout of controls) {
-    const spec = byName.get(layout.name); if (!spec) continue;
-    const control = document.createElement('div');
-    control.className = 'parameter-control'; control.dataset.name = spec.name; control.dataset.index = spec.index;
-    Object.assign(control.style, { left: `${layout.x}%`, top: `${layout.y}%`, width: `${layout.width}%`, height: `${layout.height}%` });
-    const label = Object.assign(document.createElement('div'), { className: 'control-label', textContent: spec.label, title: spec.name });
-    const value = Object.assign(document.createElement('output'), { className: 'control-value' });
-    if (layout.kind === 'slider') {
-      const input = Object.assign(document.createElement('input'), { type: 'range', min: '0', max: '1', step: '0.001', className: 'parameter-slider' });
-      input.addEventListener('input', () => setParameter(spec.index, Number(input.value)));
-      control.append(label, input, value);
-    } else if (layout.kind === 'toggle') {
-      const toggle = Object.assign(document.createElement('button'), { className: 'parameter-toggle', title: 'トグル' });
-      toggle.addEventListener('click', () => { if (!arranging) { const fresh = currentSpec(spec.index); setParameter(spec.index, fresh?.normalized >= .5 ? 0 : 1); } });
-      control.append(label, toggle, value);
-    } else {
-      const knob = Object.assign(document.createElement('div'), { className: 'knob', role: 'slider', tabIndex: 0 });
-      installKnob(knob, spec.index); control.append(label, knob, value);
+presetSelect.addEventListener(
+  'change',
+  () => {
+    const selected =
+      parsePresetOption(
+        presetSelect.value,
+      );
+
+    if (
+      selected.kind === 'custom'
+    ) {
+      $('#custom-preset-name')
+        .value =
+        selected.name;
     }
-    control.addEventListener('dblclick', event => { if (!arranging) { event.preventDefault(); const fresh = currentSpec(spec.index); if (fresh) setParameter(spec.index, normalizedDefault(fresh)); } });
-    installArrangeDrag(control); stage.append(control);
-  }
-  for (const spec of parameters) updateControlValue(spec.index, spec.normalized, spec);
-}
 
-function setParameter(index, normalized) {
-  normalized = Math.max(0, Math.min(1, normalized));
-  const spec = currentSpec(index); if (spec) spec.normalized = normalized;
-  updateControlValue(index, normalized, spec); send({ cmd: 'setUserParameter', index, value: normalized });
-}
+    loadPreset(
+      presetSelect.value,
+    );
+  },
+);
 
-function updateControlValue(index, normalized, spec) {
-  const control = stage.querySelector(`.parameter-control[data-index="${index}"]`); if (!control) return;
-  const knob = control.querySelector('.knob'); if (knob) knob.style.setProperty('--value', normalized);
-  const slider = control.querySelector('.parameter-slider'); if (slider && document.activeElement !== slider) slider.value = normalized;
-  control.querySelector('.parameter-toggle')?.classList.toggle('on', normalized >= .5);
-  const output = control.querySelector('.control-value'); if (output && spec) output.textContent = displayValue(spec, normalized);
-  knob?.setAttribute('aria-valuenow', spec ? displayValue(spec, normalized) : normalized.toFixed(3));
-}
+$('#load-preset')
+  .addEventListener(
+    'click',
+    () =>
+      loadPreset(
+        presetSelect.value,
+      ),
+  );
 
-function installKnob(knob, index) {
-  knob.addEventListener('pointerdown', event => {
-    if (arranging) return;
-    event.preventDefault(); interacting = true; knob.setPointerCapture(event.pointerId);
-    const startY = event.clientY; const start = currentSpec(index)?.normalized || 0;
-    const move = moveEvent => setParameter(index, start + (startY - moveEvent.clientY) / 140);
-    const up = () => { interacting = false; knob.removeEventListener('pointermove', move); knob.removeEventListener('pointerup', up); knob.removeEventListener('pointercancel', up); };
-    knob.addEventListener('pointermove', move); knob.addEventListener('pointerup', up); knob.addEventListener('pointercancel', up);
-  });
-  knob.addEventListener('wheel', event => {
-    event.preventDefault(); const spec = currentSpec(index); if (!spec) return;
-    const amount = spec.step > 0 ? spec.step / (spec.max - spec.min) : .01;
-    setParameter(index, spec.normalized + (event.deltaY < 0 ? amount : -amount));
-  }, { passive: false });
-  knob.addEventListener('keydown', event => {
-    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft'].includes(event.key)) return;
-    event.preventDefault(); const spec = currentSpec(index); if (spec) setParameter(index, spec.normalized + (['ArrowUp', 'ArrowRight'].includes(event.key) ? .01 : -.01));
-  });
-}
+$('#cancel-preset-load')
+  .addEventListener(
+    'click',
+    closePresetConfirm,
+  );
 
-function layoutFor(name) { return latestState?.controls?.find(control => control.name === name); }
-function installArrangeDrag(control) {
-  control.addEventListener('pointerdown', event => {
-    if (!arranging || event.button !== 0) return;
-    event.preventDefault(); interacting = true; control.setPointerCapture(event.pointerId);
-    // 1回の操作専用スナップショットを作り、pollの応答とは独立して編集する。
-    const workingControls = (latestState?.controls || []).map(layout => ({ ...layout }));
-    const layout = workingControls.find(layout => layout.name === control.dataset.name);
-    if (!layout) { interacting = false; return; }
-    latestState.controls = workingControls;
-    const bounds = stage.getBoundingClientRect(); const box = control.getBoundingClientRect();
-    const resizing = event.clientX > box.right - 14 && event.clientY > box.bottom - 14;
-    const start = { x: event.clientX, y: event.clientY, left: layout.x, top: layout.y, width: layout.width, height: layout.height };
-    const move = moveEvent => {
-      if (resizing) {
-        layout.width = Math.max(7, Math.min(100 - layout.x, start.width + (moveEvent.clientX - start.x) / bounds.width * 100));
-        layout.height = Math.max(14, Math.min(100 - layout.y, start.height + (moveEvent.clientY - start.y) / bounds.height * 100));
-      } else {
-        layout.x = Math.max(0, Math.min(100 - layout.width, start.left + (moveEvent.clientX - start.x) / bounds.width * 100));
-        layout.y = Math.max(0, Math.min(100 - layout.height, start.top + (moveEvent.clientY - start.y) / bounds.height * 100));
+$('#confirm-preset-load')
+  .addEventListener(
+    'click',
+    () => {
+      const pending =
+        ui.presets.pendingConfirm;
+
+      closePresetConfirm();
+
+      if (pending) {
+        performPresetLoad(
+          pending.request,
+          pending.switchToEditor,
+        );
       }
-      Object.assign(control.style, { left: `${layout.x}%`, top: `${layout.y}%`, width: `${layout.width}%`, height: `${layout.height}%` });
-    };
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true; saveLayout(workingControls); interacting = false;
-      control.removeEventListener('pointermove', move); control.removeEventListener('pointerup', finish); control.removeEventListener('pointercancel', finish);
-    };
-    control.addEventListener('pointermove', move); control.addEventListener('pointerup', finish); control.addEventListener('pointercancel', finish);
+    },
+  );
+
+$('#preset-confirm')
+  .addEventListener(
+    'pointerdown',
+    event => {
+      if (
+        event.target.id ===
+        'preset-confirm'
+      ) {
+        closePresetConfirm();
+      }
+    },
+  );
+
+$('#save-custom-preset')
+  .addEventListener(
+    'click',
+    () => {
+      const name =
+        $('#custom-preset-name')
+          .value
+          .trim();
+
+      if (!name) {
+        showToast(
+          'Preset名を入力してください',
+        );
+
+        $('#custom-preset-name')
+          .focus();
+
+        return;
+      }
+
+      const source =
+        editor.getValue();
+
+      const parameterValues =
+        (
+          ui.latestState
+            ?.parameters || []
+        ).map(
+          parameter => ({
+            name:
+              parameter.name,
+
+            normalized:
+              parameter.normalized,
+          }),
+        );
+
+      const controls =
+        cloneControls(
+          ui.latestState
+            ?.controls,
+        );
+
+      const existing =
+        ui.presets.custom.find(
+          preset =>
+            preset.name === name,
+        );
+
+      if (existing) {
+        Object.assign(
+          existing,
+          {
+            source,
+            parameterValues,
+            controls,
+          },
+        );
+      } else {
+        ui.presets.custom.push({
+          name,
+          source,
+          parameterValues,
+          controls,
+        });
+      }
+
+      ui.presets.custom.sort(
+        (a, b) =>
+          a.name.localeCompare(
+            b.name,
+            'ja',
+          ),
+      );
+
+      if (
+        !persistCustomPresetLibrary()
+      ) {
+        return;
+      }
+
+      rebuildPresetOptions();
+
+      presetSelect.value =
+        presetOptionValue(
+          'custom',
+          name,
+        );
+
+      $('#delete-custom-preset')
+        .disabled =
+        false;
+
+      compileNow(false);
+
+      ui.editor.dirty =
+        false;
+
+      showToast(
+        existing
+          ? 'Custom presetを更新しました'
+          : 'Custom presetを保存しました',
+      );
+    },
+  );
+
+$('#delete-custom-preset')
+  .addEventListener(
+    'click',
+    () => {
+      const selected =
+        parsePresetOption(
+          presetSelect.value,
+        );
+
+      if (
+        selected.kind !==
+        'custom'
+      ) {
+        return;
+      }
+
+      const button =
+        $('#delete-custom-preset');
+
+      if (
+        ui.presets.deleteArmed !==
+        selected.name
+      ) {
+        ui.presets.deleteArmed =
+          selected.name;
+
+        button.textContent =
+          'Confirm delete';
+
+        clearTimeout(
+          ui.presets.deleteTimer,
+        );
+
+        ui.presets.deleteTimer =
+          setTimeout(
+            () => {
+              ui.presets.deleteArmed =
+                '';
+
+              button.textContent =
+                'Delete';
+            },
+            3000,
+          );
+
+        return;
+      }
+
+      ui.presets.custom =
+        ui.presets.custom.filter(
+          preset =>
+            preset.name !==
+            selected.name,
+        );
+
+      if (
+        !persistCustomPresetLibrary()
+      ) {
+        return;
+      }
+
+      clearTimeout(
+        ui.presets.deleteTimer,
+      );
+
+      ui.presets.deleteArmed =
+        '';
+
+      rebuildPresetOptions();
+
+      presetSelect.value =
+        presetOptionValue(
+          'unsaved',
+        );
+
+      $('#custom-preset-name')
+        .value =
+        '';
+
+      button.textContent =
+        'Delete';
+
+      button.disabled =
+        true;
+
+      showToast(
+        'Custom presetを削除しました',
+      );
+    },
+  );
+
+// -----------------------------------------------------------------------------
+// Performance controls / layout
+// -----------------------------------------------------------------------------
+
+function decimalsFor(step) {
+  if (!step) return 3;
+  if (step >= 1) return 0;
+
+  return Math.min(
+    4,
+    Math.max(
+      1,
+      Math.ceil(
+        -Math.log10(step),
+      ),
+    ),
+  );
+}
+
+function normalizedDefault(spec) {
+  const span =
+    spec.max - spec.min;
+
+  return span === 0
+    ? 0
+    : clamp01(
+      (spec.default - spec.min) /
+      span,
+    );
+}
+
+function currentSpec(index) {
+  return ui.latestState
+    ?.parameters
+    ?.find(
+      parameter =>
+        parameter.index === index,
+    );
+}
+
+function displayValue(
+  spec,
+  normalized,
+) {
+  let value =
+    spec.min +
+    normalized *
+    (spec.max - spec.min);
+
+  if (spec.step > 0) {
+    value =
+      spec.min +
+      Math.round(
+        (value - spec.min) /
+        spec.step,
+      ) *
+      spec.step;
+  }
+
+  return value.toFixed(
+    decimalsFor(spec.step),
+  );
+}
+
+function controlFingerprint(
+  controls,
+) {
+  return JSON.stringify(
+    (controls || []).map(
+      control => [
+        control.name,
+        control.kind,
+        control.x,
+        control.y,
+        control.width,
+        control.height,
+      ],
+    ),
+  );
+}
+
+function repairInitialLayout(
+  controls,
+) {
+  if (
+    ui.layout.initialChecked ||
+    controls.length <= 1
+  ) {
+    return controls;
+  }
+
+  ui.layout.initialChecked =
+    true;
+
+  const overlaps =
+    controls.some(
+      (left, index) =>
+        controls
+          .slice(index + 1)
+          .some(
+            right =>
+              left.x <
+              right.x +
+              right.width &&
+              left.x +
+              left.width >
+              right.x &&
+              left.y <
+              right.y +
+              right.height &&
+              left.y +
+              left.height >
+              right.y,
+          ),
+    );
+
+  if (!overlaps) {
+    return controls;
+  }
+
+  const repaired =
+    cloneControls(controls);
+
+  const columns =
+    Math.min(
+      4,
+      Math.max(
+        2,
+        Math.ceil(
+          Math.sqrt(
+            repaired.length,
+          ),
+        ),
+      ),
+    );
+
+  const width =
+    Math.min(
+      22,
+      96 / columns,
+    );
+
+  repaired.forEach(
+    (control, index) => {
+      const column =
+        index % columns;
+
+      const row =
+        Math.floor(
+          index / columns,
+        );
+
+      Object.assign(
+        control,
+        {
+          x:
+            2 +
+            column *
+            (width + 2),
+
+          y:
+            4 +
+            row * 28,
+
+          width,
+
+          height:
+            22,
+        },
+      );
+    },
+  );
+
+  ui.layout.pendingControls =
+    cloneControls(repaired);
+
+  ui.layout.pendingFingerprint =
+    controlFingerprint(repaired);
+
+  ui.layout.fingerprint =
+    '';
+
+  ui.layout.initialRepairJustApplied =
+    true;
+
+  send({
+    cmd: 'setLayout',
+    controls:
+      ui.layout.pendingControls,
+  });
+
+  return repaired;
+}
+
+function reconcileLayoutControls(
+  controls,
+) {
+  let next =
+    repairInitialLayout(
+      cloneControls(controls),
+    );
+
+  let fingerprint =
+    controlFingerprint(next);
+
+  if (
+    ui.layout.pendingFingerprint &&
+    fingerprint !==
+    ui.layout.pendingFingerprint &&
+    ui.layout.pendingControls
+  ) {
+    next =
+      cloneControls(
+        ui.layout.pendingControls,
+      );
+
+    fingerprint =
+      ui.layout.pendingFingerprint;
+
+    if (ui.latestState) {
+      ui.latestState.controls =
+        cloneControls(next);
+    }
+  } else if (
+    ui.layout.pendingFingerprint ===
+    fingerprint
+  ) {
+    if (
+      ui.layout
+        .initialRepairJustApplied
+    ) {
+      ui.layout
+        .initialRepairJustApplied =
+        false;
+    } else {
+      ui.layout.pendingFingerprint =
+        null;
+
+      ui.layout.pendingControls =
+        null;
+    }
+  }
+
+  return {
+    controls: next,
+    fingerprint,
+  };
+}
+
+function syncControls(
+  parameters,
+  controls,
+) {
+  const reconciled =
+    reconcileLayoutControls(
+      controls,
+    );
+
+  if (
+    reconciled.fingerprint !==
+    ui.layout.fingerprint
+  ) {
+    ui.layout.fingerprint =
+      reconciled.fingerprint;
+
+    renderControls(
+      parameters,
+      reconciled.controls,
+    );
+  }
+
+  for (const spec of parameters) {
+    updateControlValue(
+      spec.index,
+      spec.normalized,
+      spec,
+    );
+  }
+
+  $('#empty-controls').hidden =
+    parameters.length > 0;
+
+  $('#parameter-count')
+    .textContent =
+    `${parameters.length} parameter${parameters.length === 1
+      ? ''
+      : 's'
+    }`;
+}
+
+function renderControls(
+  parameters,
+  controls,
+) {
+  stage
+    .querySelectorAll(
+      '.parameter-control',
+    )
+    .forEach(
+      element =>
+        element.remove(),
+    );
+
+  const byName =
+    new Map(
+      parameters.map(
+        parameter => [
+          parameter.name,
+          parameter,
+        ],
+      ),
+    );
+
+  for (
+    const layout
+    of controls
+  ) {
+    const spec =
+      byName.get(
+        layout.name,
+      );
+
+    if (!spec) continue;
+
+    const control =
+      document.createElement(
+        'div',
+      );
+
+    control.className =
+      'parameter-control';
+
+    control.dataset.name =
+      spec.name;
+
+    control.dataset.index =
+      spec.index;
+
+    Object.assign(
+      control.style,
+      {
+        left:
+          `${layout.x}%`,
+
+        top:
+          `${layout.y}%`,
+
+        width:
+          `${layout.width}%`,
+
+        height:
+          `${layout.height}%`,
+      },
+    );
+
+    const label =
+      Object.assign(
+        document.createElement(
+          'div',
+        ),
+        {
+          className:
+            'control-label',
+
+          textContent:
+            spec.label,
+
+          title:
+            spec.name,
+        },
+      );
+
+    const value =
+      Object.assign(
+        document.createElement(
+          'output',
+        ),
+        {
+          className:
+            'control-value',
+        },
+      );
+
+    if (
+      layout.kind === 'slider'
+    ) {
+      const input =
+        Object.assign(
+          document.createElement(
+            'input',
+          ),
+          {
+            type: 'range',
+            min: '0',
+            max: '1',
+            step: '0.001',
+            className:
+              'parameter-slider',
+          },
+        );
+
+      input.addEventListener(
+        'input',
+        () =>
+          setParameter(
+            spec.index,
+            Number(input.value),
+          ),
+      );
+
+      control.append(
+        label,
+        input,
+        value,
+      );
+    } else if (
+      layout.kind === 'toggle'
+    ) {
+      const toggle =
+        Object.assign(
+          document.createElement(
+            'button',
+          ),
+          {
+            className:
+              'parameter-toggle',
+
+            title:
+              'トグル',
+          },
+        );
+
+      toggle.addEventListener(
+        'click',
+        () => {
+          if (
+            ui.layout.arranging
+          ) {
+            return;
+          }
+
+          const fresh =
+            currentSpec(
+              spec.index,
+            );
+
+          if (fresh) {
+            setParameter(
+              spec.index,
+              fresh.normalized >= 0.5
+                ? 0
+                : 1,
+            );
+          }
+        },
+      );
+
+      control.append(
+        label,
+        toggle,
+        value,
+      );
+    } else {
+      const knob =
+        Object.assign(
+          document.createElement(
+            'div',
+          ),
+          {
+            className: 'knob',
+            role: 'slider',
+            tabIndex: 0,
+          },
+        );
+
+      installKnob(
+        knob,
+        spec.index,
+      );
+
+      control.append(
+        label,
+        knob,
+        value,
+      );
+    }
+
+    control.addEventListener(
+      'dblclick',
+      event => {
+        if (
+          ui.layout.arranging
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+
+        const fresh =
+          currentSpec(
+            spec.index,
+          );
+
+        if (fresh) {
+          setParameter(
+            spec.index,
+            normalizedDefault(
+              fresh,
+            ),
+          );
+        }
+      },
+    );
+
+    installArrangeDrag(control);
+    stage.append(control);
+  }
+
+  for (
+    const spec
+    of parameters
+  ) {
+    updateControlValue(
+      spec.index,
+      spec.normalized,
+      spec,
+    );
+  }
+}
+
+function setParameter(
+  index,
+  normalized,
+) {
+  const value =
+    clamp01(normalized);
+
+  const spec =
+    currentSpec(index);
+
+  if (spec) {
+    spec.normalized =
+      value;
+  }
+
+  updateControlValue(
+    index,
+    value,
+    spec,
+  );
+
+  send({
+    cmd: 'setUserParameter',
+    index,
+    value,
   });
 }
 
-function saveLayout(controls = latestState?.controls) {
-  if (!latestState) return;
-  const snapshot = (controls || []).map(control => ({ ...control }));
-  latestState.controls = snapshot;
-  layoutFingerprint = JSON.stringify(snapshot.map(control => [control.name, control.kind, control.x, control.y, control.width, control.height]));
-  pendingLayoutFingerprint = layoutFingerprint;
-  pendingLayoutControls = snapshot.map(control => ({ ...control }));
-  send({ cmd: 'setLayout', controls: pendingLayoutControls });
-}
-function setControlKind(name, kind) {
-  const layout = layoutFor(name); if (!layout) return;
-  layout.kind = kind; saveLayout(); layoutFingerprint = ''; syncControls(latestState.parameters, latestState.controls);
-}
-function toggleArrange(force) {
-  arranging = typeof force === 'boolean' ? force : !arranging;
-  stage.classList.toggle('arranging', arranging); $('#arrange-button').classList.toggle('active', arranging);
-  $('#arrange-hint').textContent = arranging
-    ? 'Layout mode: ドラッグで移動、右下のハンドルでサイズ変更、プロジェクトに保存'
-    : 'Guide: p.name = param(default, min, max, step, cc_link?) · 右クリックでVST操作';
-}
-$('#arrange-button').addEventListener('click', () => toggleArrange());
-$('#reset-parameters').addEventListener('click', () => {
-  for (const spec of latestState?.parameters || []) setParameter(spec.index, normalizedDefault(spec));
-  showToast('すべてのパラメーターをリセットしました');
-});
+function updateControlValue(
+  index,
+  normalized,
+  spec,
+) {
+  const control =
+    stage.querySelector(
+      `.parameter-control[data-index="${index}"]`,
+    );
 
-function openParameterGuide(event) {
+  if (!control) return;
+
+  const knob =
+    control.querySelector(
+      '.knob',
+    );
+
+  const slider =
+    control.querySelector(
+      '.parameter-slider',
+    );
+
+  const toggle =
+    control.querySelector(
+      '.parameter-toggle',
+    );
+
+  const output =
+    control.querySelector(
+      '.control-value',
+    );
+
+  if (knob) {
+    knob.style.setProperty(
+      '--value',
+      normalized,
+    );
+  }
+
+  if (
+    slider &&
+    document.activeElement !==
+    slider
+  ) {
+    slider.value =
+      normalized;
+  }
+
+  toggle
+    ?.classList
+    .toggle(
+      'on',
+      normalized >= 0.5,
+    );
+
+  if (
+    output &&
+    spec
+  ) {
+    output.textContent =
+      displayValue(
+        spec,
+        normalized,
+      );
+  }
+
+  knob?.setAttribute(
+    'aria-valuenow',
+    spec
+      ? displayValue(
+        spec,
+        normalized,
+      )
+      : normalized.toFixed(3),
+  );
+}
+
+function installKnob(
+  knob,
+  index,
+) {
+  knob.addEventListener(
+    'pointerdown',
+    event => {
+      if (
+        ui.layout.arranging
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      ui.layout.interacting =
+        true;
+
+      knob.setPointerCapture(
+        event.pointerId,
+      );
+
+      const startY =
+        event.clientY;
+
+      const start =
+        currentSpec(index)
+          ?.normalized || 0;
+
+      const move =
+        moveEvent =>
+          setParameter(
+            index,
+            start +
+            (
+              startY -
+              moveEvent.clientY
+            ) /
+            140,
+          );
+
+      const finish = () => {
+        ui.layout.interacting =
+          false;
+
+        knob.removeEventListener(
+          'pointermove',
+          move,
+        );
+
+        knob.removeEventListener(
+          'pointerup',
+          finish,
+        );
+
+        knob.removeEventListener(
+          'pointercancel',
+          finish,
+        );
+      };
+
+      knob.addEventListener(
+        'pointermove',
+        move,
+      );
+
+      knob.addEventListener(
+        'pointerup',
+        finish,
+      );
+
+      knob.addEventListener(
+        'pointercancel',
+        finish,
+      );
+    },
+  );
+
+  knob.addEventListener(
+    'wheel',
+    event => {
+      event.preventDefault();
+
+      const spec =
+        currentSpec(index);
+
+      if (!spec) return;
+
+      const span =
+        spec.max -
+        spec.min;
+
+      const amount =
+        spec.step > 0 &&
+          span !== 0
+          ? spec.step / span
+          : 0.01;
+
+      setParameter(
+        index,
+        spec.normalized +
+        (
+          event.deltaY < 0
+            ? amount
+            : -amount
+        ),
+      );
+    },
+    {
+      passive: false,
+    },
+  );
+
+  knob.addEventListener(
+    'keydown',
+    event => {
+      if (
+        ![
+          'ArrowUp',
+          'ArrowRight',
+          'ArrowDown',
+          'ArrowLeft',
+        ].includes(event.key)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const spec =
+        currentSpec(index);
+
+      if (!spec) return;
+
+      const direction =
+        [
+          'ArrowUp',
+          'ArrowRight',
+        ].includes(event.key)
+          ? 1
+          : -1;
+
+      setParameter(
+        index,
+        spec.normalized +
+        direction * 0.01,
+      );
+    },
+  );
+}
+
+function layoutFor(name) {
+  return ui.latestState
+    ?.controls
+    ?.find(
+      control =>
+        control.name === name,
+    );
+}
+
+function installArrangeDrag(
+  control,
+) {
+  control.addEventListener(
+    'pointerdown',
+    event => {
+      if (
+        !ui.layout.arranging ||
+        event.button !== 0
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      ui.layout.interacting =
+        true;
+
+      control.setPointerCapture(
+        event.pointerId,
+      );
+
+      const workingControls =
+        cloneControls(
+          ui.latestState
+            ?.controls,
+        );
+
+      const layout =
+        workingControls.find(
+          item =>
+            item.name ===
+            control.dataset.name,
+        );
+
+      if (!layout) {
+        ui.layout.interacting =
+          false;
+
+        return;
+      }
+
+      if (ui.latestState) {
+        ui.latestState.controls =
+          workingControls;
+      }
+
+      const bounds =
+        stage
+          .getBoundingClientRect();
+
+      const box =
+        control
+          .getBoundingClientRect();
+
+      const resizing =
+        event.clientX >
+        box.right - 14 &&
+        event.clientY >
+        box.bottom - 14;
+
+      const start = {
+        x: event.clientX,
+        y: event.clientY,
+        left: layout.x,
+        top: layout.y,
+        width: layout.width,
+        height: layout.height,
+      };
+
+      const move =
+        moveEvent => {
+          if (resizing) {
+            layout.width =
+              Math.max(
+                7,
+                Math.min(
+                  100 -
+                  layout.x,
+
+                  start.width +
+                  (
+                    moveEvent.clientX -
+                    start.x
+                  ) /
+                  bounds.width *
+                  100,
+                ),
+              );
+
+            layout.height =
+              Math.max(
+                14,
+                Math.min(
+                  100 -
+                  layout.y,
+
+                  start.height +
+                  (
+                    moveEvent.clientY -
+                    start.y
+                  ) /
+                  bounds.height *
+                  100,
+                ),
+              );
+          } else {
+            layout.x =
+              Math.max(
+                0,
+                Math.min(
+                  100 -
+                  layout.width,
+
+                  start.left +
+                  (
+                    moveEvent.clientX -
+                    start.x
+                  ) /
+                  bounds.width *
+                  100,
+                ),
+              );
+
+            layout.y =
+              Math.max(
+                0,
+                Math.min(
+                  100 -
+                  layout.height,
+
+                  start.top +
+                  (
+                    moveEvent.clientY -
+                    start.y
+                  ) /
+                  bounds.height *
+                  100,
+                ),
+              );
+          }
+
+          Object.assign(
+            control.style,
+            {
+              left:
+                `${layout.x}%`,
+
+              top:
+                `${layout.y}%`,
+
+              width:
+                `${layout.width}%`,
+
+              height:
+                `${layout.height}%`,
+            },
+          );
+        };
+
+      let finished = false;
+
+      const finish = () => {
+        if (finished) return;
+
+        finished = true;
+
+        saveLayout(
+          workingControls,
+        );
+
+        ui.layout.interacting =
+          false;
+
+        control.removeEventListener(
+          'pointermove',
+          move,
+        );
+
+        control.removeEventListener(
+          'pointerup',
+          finish,
+        );
+
+        control.removeEventListener(
+          'pointercancel',
+          finish,
+        );
+      };
+
+      control.addEventListener(
+        'pointermove',
+        move,
+      );
+
+      control.addEventListener(
+        'pointerup',
+        finish,
+      );
+
+      control.addEventListener(
+        'pointercancel',
+        finish,
+      );
+    },
+  );
+}
+
+function saveLayout(
+  controls =
+    ui.latestState?.controls,
+) {
+  if (!ui.latestState) {
+    return;
+  }
+
+  const snapshot =
+    cloneControls(controls);
+
+  ui.latestState.controls =
+    snapshot;
+
+  ui.layout.fingerprint =
+    controlFingerprint(
+      snapshot,
+    );
+
+  ui.layout.pendingFingerprint =
+    ui.layout.fingerprint;
+
+  ui.layout.pendingControls =
+    cloneControls(snapshot);
+
+  send({
+    cmd: 'setLayout',
+    controls:
+      ui.layout.pendingControls,
+  });
+}
+
+function setControlKind(
+  name,
+  kind,
+) {
+  const layout =
+    layoutFor(name);
+
+  if (!layout) return;
+
+  layout.kind = kind;
+
+  saveLayout();
+
+  ui.layout.fingerprint = '';
+
+  syncControls(
+    ui.latestState.parameters || [],
+    ui.latestState.controls || [],
+  );
+}
+
+function toggleArrange(force) {
+  ui.layout.arranging =
+    typeof force === 'boolean'
+      ? force
+      : !ui.layout.arranging;
+
+  stage.classList.toggle(
+    'arranging',
+    ui.layout.arranging,
+  );
+
+  $('#arrange-button')
+    .classList
+    .toggle(
+      'active',
+      ui.layout.arranging,
+    );
+
+  $('#arrange-hint')
+    .textContent =
+    ui.layout.arranging
+      ? 'Layout mode: ドラッグで移動、右下のハンドルでサイズ変更、プロジェクトに保存'
+      : 'Guide: p.name = param(default, min, max, step, cc_link?) · 右クリックでVST操作';
+}
+
+$('#arrange-button')
+  .addEventListener(
+    'click',
+    () => toggleArrange(),
+  );
+
+$('#reset-parameters')
+  .addEventListener(
+    'click',
+    () => {
+      for (
+        const spec
+        of ui.latestState
+          ?.parameters || []
+      ) {
+        setParameter(
+          spec.index,
+          normalizedDefault(spec),
+        );
+      }
+
+      showToast(
+        'すべてのパラメーターをリセットしました',
+      );
+    },
+  );
+
+// -----------------------------------------------------------------------------
+// Guides / context menu
+// -----------------------------------------------------------------------------
+
+function openParameterGuide(
+  event,
+) {
   event?.preventDefault();
-  const modal = $('#parameter-guide'); modal.hidden = false; modal.setAttribute('aria-hidden', 'false');
+
+  openModal(
+    '#parameter-guide',
+  );
 }
-function openEditorGuide(event) {
+
+function openEditorGuide(
+  event,
+) {
   event?.preventDefault();
-  const modal = $('#editor-guide'); modal.hidden = false; modal.setAttribute('aria-hidden', 'false');
+
+  openModal(
+    '#editor-guide',
+  );
 }
-function closeParameterGuide(event) {
-  event?.preventDefault(); event?.stopPropagation();
-  const modal = $('#parameter-guide'); modal.hidden = true; modal.setAttribute('aria-hidden', 'true');
+
+function closeParameterGuide(
+  event,
+) {
+  event?.preventDefault();
+  event?.stopPropagation();
+
+  closeModal(
+    '#parameter-guide',
+  );
 }
-function closeEditorGuide(event) {
-  event?.preventDefault(); event?.stopPropagation();
-  const modal = $('#editor-guide'); modal.hidden = true; modal.setAttribute('aria-hidden', 'true');
+
+function closeEditorGuide(
+  event,
+) {
+  event?.preventDefault();
+  event?.stopPropagation();
+
+  closeModal(
+    '#editor-guide',
+  );
 }
-$('#parameter-guide-button').addEventListener('click', openParameterGuide);
-$('#editor-guide-button').addEventListener('click', openEditorGuide);
-$('#close-parameter-guide').addEventListener('click', closeParameterGuide);
-$('#close-editor-guide').addEventListener('click', closeEditorGuide);
-$('#load-parameter-guide').addEventListener('click', () => {
-  closeParameterGuide(); loadPreset('Parameter Guide', true);
-});
-$('#parameter-guide').addEventListener('pointerdown', event => { if (event.target.id === 'parameter-guide') closeParameterGuide(); });
+
+$('#parameter-guide-button')
+  .addEventListener(
+    'click',
+    openParameterGuide,
+  );
+
+$('#editor-guide-button')
+  .addEventListener(
+    'click',
+    openEditorGuide,
+  );
+
+$('#close-parameter-guide')
+  .addEventListener(
+    'click',
+    closeParameterGuide,
+  );
+
+$('#close-editor-guide')
+  .addEventListener(
+    'click',
+    closeEditorGuide,
+  );
+
+$('#load-parameter-guide')
+  .addEventListener(
+    'click',
+    () => {
+      closeParameterGuide();
+
+      loadPreset(
+        'Parameter Guide',
+        true,
+      );
+    },
+  );
+
+$('#parameter-guide')
+  .addEventListener(
+    'pointerdown',
+    event => {
+      if (
+        event.target.id ===
+        'parameter-guide'
+      ) {
+        closeParameterGuide();
+      }
+    },
+  );
+
+$('#editor-guide')
+  .addEventListener(
+    'pointerdown',
+    event => {
+      if (
+        event.target.id ===
+        'editor-guide'
+      ) {
+        closeEditorGuide();
+      }
+    },
+  );
 
 function menuItemsFor(control) {
   if (control) {
-    const index = Number(control.dataset.index); const spec = currentSpec(index); const layout = layoutFor(control.dataset.name);
+    const index =
+      Number(
+        control.dataset.index,
+      );
+
+    const spec =
+      currentSpec(index);
+
+    const layout =
+      layoutFor(
+        control.dataset.name,
+      );
+
+    if (
+      !spec ||
+      !layout
+    ) {
+      return [];
+    }
+
     return [
-      { label: `Reset ${spec.label}`, shortcut: `${spec.default}`, action: () => setParameter(index, normalizedDefault(spec)) },
-      { label: 'Copy parameter value', action: () => { copiedParameter = spec.normalized; showToast(`${spec.label} copied`); } },
-      { label: 'Paste parameter value', disabled: copiedParameter === null, action: () => setParameter(index, copiedParameter) }, null,
-      { label: 'Display as knob', checked: layout.kind === 'knob', action: () => setControlKind(layout.name, 'knob') },
-      { label: 'Display as slider', checked: layout.kind === 'slider', action: () => setControlKind(layout.name, 'slider') },
-      { label: 'Display as toggle', checked: layout.kind === 'toggle', action: () => setControlKind(layout.name, 'toggle') }, null,
-      { label: arranging ? 'Finish arranging' : 'Arrange controls', action: () => toggleArrange() },
+      {
+        label:
+          `Reset ${spec.label}`,
+
+        shortcut:
+          `${spec.default}`,
+
+        action:
+          () =>
+            setParameter(
+              index,
+              normalizedDefault(
+                spec,
+              ),
+            ),
+      },
+
+      {
+        label:
+          'Copy parameter value',
+
+        action: () => {
+          ui.copiedParameter =
+            spec.normalized;
+
+          showToast(
+            `${spec.label} copied`,
+          );
+        },
+      },
+
+      {
+        label:
+          'Paste parameter value',
+
+        disabled:
+          ui.copiedParameter ===
+          null,
+
+        action:
+          () =>
+            setParameter(
+              index,
+              ui.copiedParameter,
+            ),
+      },
+
+      null,
+
+      {
+        label:
+          'Display as knob',
+
+        checked:
+          layout.kind ===
+          'knob',
+
+        action:
+          () =>
+            setControlKind(
+              layout.name,
+              'knob',
+            ),
+      },
+
+      {
+        label:
+          'Display as slider',
+
+        checked:
+          layout.kind ===
+          'slider',
+
+        action:
+          () =>
+            setControlKind(
+              layout.name,
+              'slider',
+            ),
+      },
+
+      {
+        label:
+          'Display as toggle',
+
+        checked:
+          layout.kind ===
+          'toggle',
+
+        action:
+          () =>
+            setControlKind(
+              layout.name,
+              'toggle',
+            ),
+      },
+
+      null,
+
+      {
+        label:
+          ui.layout.arranging
+            ? 'Finish arranging'
+            : 'Arrange controls',
+
+        action:
+          () =>
+            toggleArrange(),
+      },
     ];
   }
+
   return [
-    { label: 'Compile program', shortcut: 'Ctrl+S', action: () => compileNow(false) },
-    { label: 'Preview current note', shortcut: 'Ctrl+Enter', action: () => compileNow(true) }, null,
-    { label: currentMode === 'editor' ? 'Switch to Play' : 'Switch to Editor', action: () => setMode(currentMode === 'editor' ? 'play' : 'editor') },
-    { label: 'Reset all parameters', action: () => $('#reset-parameters').click() },
-    { label: 'Parameter & layout guide', action: openParameterGuide },
-    { label: 'Release all notes', action: releaseAllNotes }, null,
-    { label: 'Copy synth source', action: async () => {
-      try { await navigator.clipboard.writeText(editor.getValue()); showToast('Source copied'); }
-      catch { showToast('Clipboard unavailable in this host'); }
-    } },
+    {
+      label:
+        'Compile program',
+
+      shortcut:
+        'Ctrl+S',
+
+      action:
+        () =>
+          compileNow(false),
+    },
+
+    {
+      label:
+        'Preview current note',
+
+      shortcut:
+        'Ctrl+Enter',
+
+      action:
+        () =>
+          compileNow(true),
+    },
+
+    null,
+
+    {
+      label:
+        ui.mode === 'editor'
+          ? 'Switch to Play'
+          : 'Switch to Editor',
+
+      action:
+        () =>
+          setMode(
+            ui.mode === 'editor'
+              ? 'play'
+              : 'editor',
+          ),
+    },
+
+    {
+      label:
+        'Reset all parameters',
+
+      action:
+        () =>
+          $('#reset-parameters')
+            .click(),
+    },
+
+    {
+      label:
+        'Parameter & layout guide',
+
+      action:
+        openParameterGuide,
+    },
+
+    {
+      label:
+        'Release all notes',
+
+      action:
+        releaseAllNotes,
+    },
+
+    null,
+
+    {
+      label:
+        'Copy synth source',
+
+      action:
+        async () => {
+          try {
+            await navigator
+              .clipboard
+              .writeText(
+                editor.getValue(),
+              );
+
+            showToast(
+              'Source copied',
+            );
+          } catch {
+            showToast(
+              'Clipboard unavailable in this host',
+            );
+          }
+        },
+    },
   ];
 }
 
-function openContextMenu(x, y, items) {
+function openContextMenu(
+  x,
+  y,
+  items,
+) {
   contextMenu.replaceChildren();
+
   for (const item of items) {
-    if (!item) { contextMenu.append(document.createElement('hr')); continue; }
-    const button = document.createElement('button'); button.disabled = Boolean(item.disabled);
-    const label = document.createElement('span'); label.textContent = `${item.checked ? '● ' : ''}${item.label}`;
-    const shortcut = document.createElement('kbd'); shortcut.textContent = item.shortcut || '';
-    button.append(label, shortcut);
-    button.addEventListener('click', () => { contextMenu.hidden = true; item.action?.(); });
+    if (!item) {
+      contextMenu.append(
+        document.createElement(
+          'hr',
+        ),
+      );
+
+      continue;
+    }
+
+    const button =
+      document.createElement(
+        'button',
+      );
+
+    button.disabled =
+      Boolean(item.disabled);
+
+    const label =
+      document.createElement(
+        'span',
+      );
+
+    label.textContent =
+      `${item.checked ? '● ' : ''}${item.label}`;
+
+    const shortcut =
+      document.createElement(
+        'kbd',
+      );
+
+    shortcut.textContent =
+      item.shortcut || '';
+
+    button.append(
+      label,
+      shortcut,
+    );
+
+    button.addEventListener(
+      'click',
+      () => {
+        contextMenu.hidden =
+          true;
+
+        item.action?.();
+      },
+    );
+
     contextMenu.append(button);
   }
+
   contextMenu.hidden = false;
-  const width = 220; const height = contextMenu.offsetHeight;
-  contextMenu.style.left = `${Math.max(4, Math.min(x, innerWidth - width - 6))}px`;
-  contextMenu.style.top = `${Math.max(4, Math.min(y, innerHeight - height - 6))}px`;
+
+  const width = 220;
+  const height =
+    contextMenu.offsetHeight;
+
+  contextMenu.style.left =
+    `${Math.max(
+      4,
+      Math.min(
+        x,
+        innerWidth -
+        width -
+        6,
+      ),
+    )
+    }px`;
+
+  contextMenu.style.top =
+    `${Math.max(
+      4,
+      Math.min(
+        y,
+        innerHeight -
+        height -
+        6,
+      ),
+    )
+    }px`;
 }
 
-document.addEventListener('contextmenu', event => {
-  event.preventDefault(); openContextMenu(event.clientX, event.clientY, menuItemsFor(event.target.closest('.parameter-control')));
-});
-document.addEventListener('pointerdown', event => {
-  if (!contextMenu.hidden && !contextMenu.contains(event.target)) contextMenu.hidden = true;
-}, true);
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') {
-    contextMenu.hidden = true;
-    closePresetConfirm(); closeParameterGuide(); closeEditorGuide();
-    if (arranging) toggleArrange(false);
-  }
-});
+document.addEventListener(
+  'contextmenu',
+  event => {
+    event.preventDefault();
 
-let activeNotes = new Set();
-const localNoteVelocities = new Map();
-let midiNoteVelocities = new Map();
-let releasingNoteVelocities = new Map();
-function renderKeyHighlight(note) {
-  const localVelocity = localNoteVelocities.get(note) || 0;
-  const midiVelocity = midiNoteVelocities.get(note) || 0;
-  const velocity = Math.max(localVelocity, midiVelocity);
-  const pressed = velocity > 0;
-  const releaseVelocity = releasingNoteVelocities.get(note) || 0;
-  const releasing = releaseVelocity > 0;
-  document.querySelectorAll(`.key[data-note="${note}"]`).forEach(key => {
-    key.classList.toggle('active', localVelocity > 0);
-    key.classList.toggle('midi-active', midiVelocity > 0);
-    key.classList.toggle('release-active', releasing);
-    if (pressed) {
-      const brightness = Math.round(132 + velocity * 112);
-      const black = key.classList.contains('black');
-      const base = black ? Math.round(70 + velocity * 166) : brightness;
-      key.style.backgroundColor = `rgb(${base} ${base} ${Math.max(0, base - (black ? 7 : 8))})`;
-    } else {
-      key.style.removeProperty('background-color');
+    openContextMenu(
+      event.clientX,
+      event.clientY,
+      menuItemsFor(
+        event.target.closest(
+          '.parameter-control',
+        ),
+      ),
+    );
+  },
+);
+
+document.addEventListener(
+  'pointerdown',
+  event => {
+    if (
+      !contextMenu.hidden &&
+      !contextMenu.contains(
+        event.target,
+      )
+    ) {
+      contextMenu.hidden =
+        true;
     }
-    if (releasing) {
-      const outline = Math.round(112 + releaseVelocity * 143);
-      const inset = Math.round(72 + releaseVelocity * 130);
-      key.style.setProperty('--release-outline', `rgb(${outline} ${outline} ${Math.max(0, outline - 8)})`);
-      key.style.setProperty('--release-inset', `rgb(${inset} ${inset} ${Math.max(0, inset - 8)})`);
-    } else {
-      key.style.removeProperty('--release-outline');
-      key.style.removeProperty('--release-inset');
+  },
+  true,
+);
+
+document.addEventListener(
+  'keydown',
+  event => {
+    if (
+      event.key !==
+      'Escape'
+    ) {
+      return;
     }
+
+    contextMenu.hidden =
+      true;
+
+    closePresetConfirm();
+    closeParameterGuide();
+    closeEditorGuide();
+
+    if (
+      ui.layout.arranging
+    ) {
+      toggleArrange(false);
+    }
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Keyboard / MIDI preview
+// -----------------------------------------------------------------------------
+
+const localActiveNotes =
+  new Set();
+
+const localNoteVelocities =
+  new Map();
+
+let midiNoteVelocities =
+  new Map();
+
+let releasingNoteVelocities =
+  new Map();
+
+let keyboardOctave = 4;
+let keyboardVelocity = 0.9;
+let sustainHeld = false;
+
+const sustainedNotes =
+  new Set();
+
+function renderKeyHighlight(
+  note,
+) {
+  const localVelocity =
+    localNoteVelocities
+      .get(note) || 0;
+
+  const midiVelocity =
+    midiNoteVelocities
+      .get(note) || 0;
+
+  const velocity =
+    Math.max(
+      localVelocity,
+      midiVelocity,
+    );
+
+  const releaseVelocity =
+    releasingNoteVelocities
+      .get(note) || 0;
+
+  const pressed =
+    velocity > 0;
+
+  const releasing =
+    releaseVelocity > 0;
+
+  document
+    .querySelectorAll(
+      `.key[data-note="${note}"]`,
+    )
+    .forEach(
+      key => {
+        key.classList.toggle(
+          'active',
+          localVelocity > 0,
+        );
+
+        key.classList.toggle(
+          'midi-active',
+          midiVelocity > 0,
+        );
+
+        key.classList.toggle(
+          'release-active',
+          releasing,
+        );
+
+        if (pressed) {
+          const brightness =
+            Math.round(
+              132 +
+              velocity * 112,
+            );
+
+          const black =
+            key.classList
+              .contains(
+                'black',
+              );
+
+          const base =
+            black
+              ? Math.round(
+                70 +
+                velocity * 166,
+              )
+              : brightness;
+
+          key.style.backgroundColor =
+            `rgb(${base} ${base} ${Math.max(
+              0,
+              base -
+              (
+                black
+                  ? 7
+                  : 8
+              ),
+            )
+            })`;
+        } else {
+          key.style
+            .removeProperty(
+              'background-color',
+            );
+        }
+
+        if (releasing) {
+          const outline =
+            Math.round(
+              112 +
+              releaseVelocity *
+              143,
+            );
+
+          const inset =
+            Math.round(
+              72 +
+              releaseVelocity *
+              130,
+            );
+
+          key.style.setProperty(
+            '--release-outline',
+            `rgb(${outline} ${outline} ${Math.max(
+              0,
+              outline - 8,
+            )
+            })`,
+          );
+
+          key.style.setProperty(
+            '--release-inset',
+            `rgb(${inset} ${inset} ${Math.max(
+              0,
+              inset - 8,
+            )
+            })`,
+          );
+        } else {
+          key.style.removeProperty(
+            '--release-outline',
+          );
+
+          key.style.removeProperty(
+            '--release-inset',
+          );
+        }
+      },
+    );
+}
+
+function syncMidiPreview(
+  notes,
+  releaseNotes,
+) {
+  const next =
+    new Map(
+      (notes || []).map(
+        item => {
+          const note =
+            typeof item ===
+              'number'
+              ? item
+              : item.note;
+
+          const velocity =
+            typeof item ===
+              'number'
+              ? 0.9
+              : item.velocity;
+
+          return [
+            Number(note),
+            Math.max(
+              0.01,
+              clamp01(
+                velocity ||
+                0.9,
+              ),
+            ),
+          ];
+        },
+      ),
+    );
+
+  const nextReleases =
+    new Map(
+      (releaseNotes || [])
+        .map(
+          item => [
+            Number(item.note),
+            clamp01(
+              item.velocity,
+            ),
+          ],
+        )
+        .filter(
+          ([, velocity]) =>
+            velocity > 0,
+        ),
+    );
+
+  const changed =
+    new Set([
+      ...midiNoteVelocities.keys(),
+      ...next.keys(),
+      ...releasingNoteVelocities.keys(),
+      ...nextReleases.keys(),
+    ]);
+
+  midiNoteVelocities =
+    next;
+
+  releasingNoteVelocities =
+    nextReleases;
+
+  for (const note of changed) {
+    renderKeyHighlight(note);
+  }
+
+  const indicator =
+    $('#midi-input-indicator');
+
+  const latest =
+    [...midiNoteVelocities.entries()]
+      .at(-1);
+
+  if (latest) {
+    const [note, velocity] =
+      latest;
+
+    const additional =
+      midiNoteVelocities.size > 1
+        ? ` +${midiNoteVelocities.size - 1}`
+        : '';
+
+    indicator.textContent =
+      `MIDI IN ${midiName(note)} · ${Math.round(
+        velocity * 100,
+      )
+      }%${additional}`;
+
+    indicator.classList.add(
+      'active',
+    );
+  } else {
+    indicator.textContent =
+      'MIDI IN —';
+
+    indicator.classList.remove(
+      'active',
+    );
+  }
+}
+
+function noteOn(
+  note,
+  _key,
+  velocity = 0.9,
+) {
+  if (!ui.endpoints.hasNote) return;
+
+  if (
+    localActiveNotes.has(note)
+  ) {
+    return;
+  }
+
+  sustainedNotes.delete(note);
+
+  localActiveNotes.add(note);
+
+  localNoteVelocities.set(
+    note,
+    velocity,
+  );
+
+  renderKeyHighlight(note);
+
+  send({
+    cmd: 'setParameter',
+    name: 'previewNote',
+    value: note,
+  });
+
+  send({
+    cmd: 'noteOn',
+    note,
+    velocity,
   });
 }
-function syncMidiPreview(notes, releaseNotes) {
-  const next = new Map(notes.map(item => {
-    const note = typeof item === 'number' ? item : item.note;
-    const velocity = typeof item === 'number' ? 0.9 : item.velocity;
-    return [Number(note), Math.max(0.01, Math.min(1, Number(velocity) || 0.9))];
-  }));
-  const nextReleases = new Map(releaseNotes.map(item => [
-    Number(item.note), Math.max(0, Math.min(1, Number(item.velocity) || 0)),
-  ]).filter(([, velocity]) => velocity > 0));
-  const changed = new Set([
-    ...midiNoteVelocities.keys(), ...next.keys(),
-    ...releasingNoteVelocities.keys(), ...nextReleases.keys(),
-  ]);
-  midiNoteVelocities = next;
-  releasingNoteVelocities = nextReleases;
-  for (const note of changed) renderKeyHighlight(note);
-  const indicator = $('#midi-input-indicator');
-  const latest = [...midiNoteVelocities.entries()].at(-1);
-  if (latest) {
-    const [note, velocity] = latest;
-    const additional = midiNoteVelocities.size > 1 ? ` +${midiNoteVelocities.size - 1}` : '';
-    indicator.textContent = `MIDI IN ${midiName(note)} · ${Math.round(velocity * 100)}%${additional}`;
-    indicator.classList.add('active');
-  } else {
-    indicator.textContent = 'MIDI IN —'; indicator.classList.remove('active');
+
+function noteOff(
+  note,
+  _key,
+) {
+  if (
+    !localActiveNotes.delete(
+      note,
+    )
+  ) {
+    return;
   }
+
+  localNoteVelocities.delete(
+    note,
+  );
+
+  renderKeyHighlight(note);
+
+  if (sustainHeld) {
+    sustainedNotes.add(note);
+    return;
+  }
+
+  send({
+    cmd: 'noteOff',
+    note,
+  });
 }
-let keyboardOctave = 4;
-let keyboardVelocity = .9;
-let sustainHeld = false;
-const sustainedNotes = new Set();
-function noteOn(note, key, velocity = .9) {
-  if (activeNotes.has(note)) return;
-  sustainedNotes.delete(note);
-  activeNotes.add(note); localNoteVelocities.set(note, velocity); renderKeyHighlight(note);
-  send({ cmd: 'setParameter', name: 'previewNote', value: note });
-  send({ cmd: 'noteOn', note, velocity });
-}
-function noteOff(note, key) {
-  if (!activeNotes.delete(note)) return;
-  localNoteVelocities.delete(note); renderKeyHighlight(note);
-  if (sustainHeld) { sustainedNotes.add(note); return; }
-  send({ cmd: 'noteOff', note });
-}
+
 function releaseAllNotes() {
-  sustainHeld = false; $('#sustain-button').classList.remove('active'); sustainedNotes.clear();
-  for (const note of [...activeNotes]) {
-    activeNotes.delete(note); localNoteVelocities.delete(note); renderKeyHighlight(note); send({ cmd: 'noteOff', note });
+  sustainHeld = false;
+
+  $('#sustain-button')
+    .classList
+    .remove('active');
+
+  sustainedNotes.clear();
+
+  for (
+    const note
+    of [...localActiveNotes]
+  ) {
+    localActiveNotes.delete(
+      note,
+    );
+
+    localNoteVelocities.delete(
+      note,
+    );
+
+    renderKeyHighlight(note);
+
+    send({
+      cmd: 'noteOff',
+      note,
+    });
   }
 }
+
 function setSustain(held) {
-  sustainHeld = held; $('#sustain-button').classList.toggle('active', held);
-  if (!held) for (const note of [...sustainedNotes]) { sustainedNotes.delete(note); send({ cmd: 'noteOff', note }); }
+  sustainHeld =
+    Boolean(held);
+
+  $('#sustain-button')
+    .classList
+    .toggle(
+      'active',
+      sustainHeld,
+    );
+
+  if (sustainHeld) {
+    return;
+  }
+
+  for (
+    const note
+    of [...sustainedNotes]
+  ) {
+    sustainedNotes.delete(note);
+
+    send({
+      cmd: 'noteOff',
+      note,
+    });
+  }
 }
+
 function previewNote() {
-  const note = latestState?.previewNote ?? 60; const key = document.querySelector(`.key[data-note="${note}"]`);
-  noteOn(note, key); setTimeout(() => noteOff(note, key), 420);
+  if (!ui.endpoints.hasNote) return;
+
+  const note =
+    ui.latestState
+      ?.previewNote ?? 60;
+
+  const key =
+    document.querySelector(
+      `.key[data-note="${note}"]`,
+    );
+
+  noteOn(
+    note,
+    key,
+    keyboardVelocity,
+  );
+
+  setTimeout(
+    () =>
+      noteOff(
+        note,
+        key,
+      ),
+    420,
+  );
 }
 
 function buildKeyboard() {
-  const keyboard = $('#keyboard'); const start = (keyboardOctave + 1) * 12;
-  const isBlack = note => [1, 3, 6, 8, 10].includes(note % 12);
-  const visibleWidth = Math.max(420, keyboard.parentElement?.clientWidth || 900);
-  const whiteTarget = Math.max(29, Math.min(61, Math.ceil(visibleWidth / 28)));
-  const notes = []; let whiteNotes = 0; let note = start;
-  while (whiteNotes < whiteTarget) { notes.push(note); if (!isBlack(note)) whiteNotes += 1; note += 1; }
-  const whiteCount = notes.filter(note => !isBlack(note)).length;
-  keyboard.replaceChildren(); keyboard.style.minWidth = '0';
-  const whiteWidth = 100 / whiteCount; let whiteIndex = 0;
-  for (const note of notes) {
-    const black = isBlack(note); const key = document.createElement('button');
-    key.className = `key ${black ? 'black' : 'white'}`; key.dataset.note = note; key.title = midiName(note);
-    if (black) { key.style.left = `${whiteIndex * whiteWidth - whiteWidth * .31}%`; key.style.width = `${whiteWidth * .62}%`; }
-    else { key.style.left = `${whiteIndex * whiteWidth}%`; key.style.width = `${whiteWidth}%`; key.textContent = note % 12 === 0 ? midiName(note) : ''; whiteIndex += 1; }
-    key.addEventListener('pointerdown', event => { event.preventDefault(); key.setPointerCapture?.(event.pointerId); noteOn(note, key, keyboardVelocity); });
-    const up = event => { event.preventDefault(); noteOff(note, key); };
-    key.addEventListener('pointerup', up); key.addEventListener('pointercancel', up); keyboard.append(key); renderKeyHighlight(note);
+  const keyboard =
+    $('#keyboard');
+
+  const start =
+    (keyboardOctave + 1) *
+    12;
+
+  const isBlack =
+    note =>
+      [1, 3, 6, 8, 10]
+        .includes(
+          note % 12,
+        );
+
+  const visibleWidth =
+    Math.max(
+      420,
+      keyboard.parentElement
+        ?.clientWidth || 900,
+    );
+
+  const whiteTarget =
+    Math.max(
+      29,
+      Math.min(
+        61,
+        Math.ceil(
+          visibleWidth / 28,
+        ),
+      ),
+    );
+
+  const notes = [];
+
+  let whiteNotes = 0;
+  let note = start;
+
+  while (
+    whiteNotes <
+    whiteTarget
+  ) {
+    notes.push(note);
+
+    if (!isBlack(note)) {
+      whiteNotes += 1;
+    }
+
+    note += 1;
+  }
+
+  const whiteCount =
+    notes.filter(
+      item =>
+        !isBlack(item),
+    ).length;
+
+  const whiteWidth =
+    100 / whiteCount;
+
+  let whiteIndex = 0;
+
+  keyboard.replaceChildren();
+  keyboard.style.minWidth = '0';
+
+  for (
+    const midiNote
+    of notes
+  ) {
+    const black =
+      isBlack(midiNote);
+
+    const key =
+      document.createElement(
+        'button',
+      );
+
+    key.className =
+      `key ${black
+        ? 'black'
+        : 'white'
+      }`;
+
+    key.dataset.note =
+      midiNote;
+
+    key.title =
+      midiName(midiNote);
+
+    if (black) {
+      key.style.left =
+        `${whiteIndex *
+        whiteWidth -
+        whiteWidth *
+        0.31
+        }%`;
+
+      key.style.width =
+        `${whiteWidth *
+        0.62
+        }%`;
+    } else {
+      key.style.left =
+        `${whiteIndex *
+        whiteWidth
+        }%`;
+
+      key.style.width =
+        `${whiteWidth}%`;
+
+      key.textContent =
+        midiNote % 12 === 0
+          ? midiName(
+            midiNote,
+          )
+          : '';
+
+      whiteIndex += 1;
+    }
+
+    key.addEventListener(
+      'pointerdown',
+      event => {
+        event.preventDefault();
+
+        key.setPointerCapture?.(
+          event.pointerId,
+        );
+
+        noteOn(
+          midiNote,
+          key,
+          keyboardVelocity,
+        );
+      },
+    );
+
+    const release =
+      event => {
+        event.preventDefault();
+
+        noteOff(
+          midiNote,
+          key,
+        );
+      };
+
+    key.addEventListener(
+      'pointerup',
+      release,
+    );
+
+    key.addEventListener(
+      'pointercancel',
+      release,
+    );
+
+    keyboard.append(key);
+
+    renderKeyHighlight(
+      midiNote,
+    );
   }
 }
 
-function setKeyboardOctave(delta) {
-  keyboardOctave = Math.max(0, Math.min(8, keyboardOctave + delta));
-  $('#keyboard-octave').textContent = `C${keyboardOctave}`; releaseAllNotes(); buildKeyboard();
+function setKeyboardOctave(
+  delta,
+) {
+  keyboardOctave =
+    Math.max(
+      0,
+      Math.min(
+        8,
+        keyboardOctave +
+        delta,
+      ),
+    );
+
+  $('#keyboard-octave')
+    .textContent =
+    `C${keyboardOctave}`;
+
+  releaseAllNotes();
+  buildKeyboard();
 }
-$('#octave-down').addEventListener('click', () => setKeyboardOctave(-1));
-$('#octave-up').addEventListener('click', () => setKeyboardOctave(1));
-$('#panic-button').addEventListener('click', releaseAllNotes);
-$('#sustain-button').addEventListener('pointerdown', event => { event.preventDefault(); setSustain(true); });
-$('#sustain-button').addEventListener('pointerup', () => setSustain(false));
-$('#sustain-button').addEventListener('pointerleave', () => setSustain(false));
-$('#keyboard-velocity').addEventListener('input', event => {
-  keyboardVelocity = Number(event.target.value) / 127;
-  $('#velocity-value').textContent = `${Math.round(keyboardVelocity * 100)}%`;
-});
-new ResizeObserver(() => buildKeyboard()).observe($('#keyboard').parentElement);
+
+$('#octave-down')
+  .addEventListener(
+    'click',
+    () =>
+      setKeyboardOctave(-1),
+  );
+
+$('#octave-up')
+  .addEventListener(
+    'click',
+    () =>
+      setKeyboardOctave(1),
+  );
+
+$('#panic-button')
+  .addEventListener(
+    'click',
+    releaseAllNotes,
+  );
+
+$('#sustain-button')
+  .addEventListener(
+    'pointerdown',
+    event => {
+      event.preventDefault();
+      setSustain(true);
+    },
+  );
+
+$('#sustain-button')
+  .addEventListener(
+    'pointerup',
+    () =>
+      setSustain(false),
+  );
+
+$('#sustain-button')
+  .addEventListener(
+    'pointerleave',
+    () =>
+      setSustain(false),
+  );
+
+$('#keyboard-velocity')
+  .addEventListener(
+    'input',
+    event => {
+      keyboardVelocity =
+        Number(
+          event.target.value,
+        ) / 127;
+
+      $('#velocity-value')
+        .textContent =
+        `${Math.round(
+          keyboardVelocity *
+          100,
+        )
+        }%`;
+    },
+  );
+
+new ResizeObserver(
+  () => buildKeyboard(),
+).observe(
+  $('#keyboard').parentElement,
+);
 
 const computerKeys = {
-  z: 48, s: 49, x: 50, d: 51, c: 52, v: 53, g: 54, b: 55, h: 56, n: 57, j: 58, m: 59,
-  ',': 60, q: 60, '2': 61, w: 62, '3': 63, e: 64, r: 65, '5': 66, t: 67, '6': 68, y: 69, '7': 70, u: 71,
+  z: 48,
+  s: 49,
+  x: 50,
+  d: 51,
+  c: 52,
+  v: 53,
+  g: 54,
+  b: 55,
+  h: 56,
+  n: 57,
+  j: 58,
+  m: 59,
+  ',': 60,
+  q: 60,
+  '2': 61,
+  w: 62,
+  '3': 63,
+  e: 64,
+  r: 65,
+  '5': 66,
+  t: 67,
+  '6': 68,
+  y: 69,
+  '7': 70,
+  u: 71,
 };
-const heldComputerKeys = new Set();
-window.addEventListener('keydown', event => {
-  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target.closest?.('.monaco-editor, input, select')) return;
-  const keyName = event.key.toLowerCase(); const note = computerKeys[keyName]; if (note === undefined) return;
-  event.preventDefault(); heldComputerKeys.add(keyName); noteOn(note, document.querySelector(`.key[data-note="${note}"]`));
-});
-window.addEventListener('keyup', event => {
-  const keyName = event.key.toLowerCase(); if (!heldComputerKeys.delete(keyName)) return;
-  const note = computerKeys[keyName]; noteOff(note, document.querySelector(`.key[data-note="${note}"]`));
-});
-window.addEventListener('blur', () => { heldComputerKeys.clear(); releaseAllNotes(); });
+
+const heldComputerKeys =
+  new Set();
+
+window.addEventListener(
+  'keydown',
+  event => {
+    if (
+      event.repeat ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.target.closest?.(
+        '.monaco-editor, input, select',
+      )
+    ) {
+      return;
+    }
+
+    if (!ui.endpoints.hasNote) return;
+
+    const keyName =
+      event.key.toLowerCase();
+
+    const note =
+      computerKeys[keyName];
+
+    if (
+      note === undefined
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+
+    heldComputerKeys.add(
+      keyName,
+    );
+
+    noteOn(
+      note,
+      document.querySelector(
+        `.key[data-note="${note}"]`,
+      ),
+      keyboardVelocity,
+    );
+  },
+);
+
+window.addEventListener(
+  'keyup',
+  event => {
+    const keyName =
+      event.key.toLowerCase();
+
+    if (
+      !heldComputerKeys.delete(
+        keyName,
+      )
+    ) {
+      return;
+    }
+
+    const note =
+      computerKeys[keyName];
+
+    noteOff(
+      note,
+      document.querySelector(
+        `.key[data-note="${note}"]`,
+      ),
+    );
+  },
+);
+
+window.addEventListener(
+  'blur',
+  () => {
+    heldComputerKeys.clear();
+    releaseAllNotes();
+  },
+);
 
 function midiName(note) {
-  const names = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-  return `${names[note % 12]}${Math.floor(note / 12) - 1}`;
+  const value =
+    Number(note) || 0;
+
+  const names = [
+    'C',
+    'C♯',
+    'D',
+    'E♭',
+    'E',
+    'F',
+    'F♯',
+    'G',
+    'A♭',
+    'A',
+    'B♭',
+    'B',
+  ];
+
+  return `${names[
+    (
+      (value % 12) +
+      12
+    ) % 12
+  ]
+    }${Math.floor(
+      value / 12,
+    ) - 1
+    }`;
 }
 
+// -----------------------------------------------------------------------------
+// Waveform scope
+// -----------------------------------------------------------------------------
+
 const SCOPE_FRAME_LENGTH = 768;
+
 let previousWave = null;
+let lastWaveOffset = 0;
+
 function phaseLockedFrame(raw) {
-  if (!raw?.length) return [];
-  const samples = raw.map(value => Number.isFinite(value) ? value : 0);
-  const frameLength = Math.min(SCOPE_FRAME_LENGTH, samples.length);
-  const maxOffset = Math.max(0, samples.length - frameLength);
-  const energy = samples.reduce((sum, value) => sum + value * value, 0);
-  if (energy / samples.length < 1e-8) { previousWave = null; return samples.slice(0, frameLength); }
+  if (!raw?.length) {
+    return [];
+  }
+
+  const samples =
+    raw.map(
+      value =>
+        Number.isFinite(value)
+          ? value
+          : 0,
+    );
+
+  const frameLength =
+    Math.min(
+      SCOPE_FRAME_LENGTH,
+      samples.length,
+    );
+
+  const maxOffset =
+    Math.max(
+      0,
+      samples.length -
+      frameLength,
+    );
+
+  const energy =
+    samples.reduce(
+      (sum, value) =>
+        sum +
+        value * value,
+      0,
+    );
+
+  if (
+    energy /
+    samples.length <
+    1e-8
+  ) {
+    previousWave = null;
+    lastWaveOffset = 0;
+
+    return samples.slice(
+      0,
+      frameLength,
+    );
+  }
+
   let offset = 0;
-  if (previousWave?.length === frameLength) {
-    let best = -Infinity; const compare = Math.min(128, frameLength);
-    for (let shift = 0; shift <= maxOffset; shift += 2) {
-      let dot = 0; let oldPower = 0; let newPower = 0;
-      for (let index = 0; index < compare; index += 1) {
-        const a = previousWave[index]; const b = samples[index + shift];
-        dot += a * b; oldPower += a * a; newPower += b * b;
+
+  if (
+    previousWave?.length ===
+    frameLength
+  ) {
+    let best = -Infinity;
+
+    const compare =
+      Math.min(
+        128,
+        frameLength,
+      );
+
+    for (
+      let shift = 0;
+      shift <= maxOffset;
+      shift += 2
+    ) {
+      let dot = 0;
+      let oldPower = 0;
+      let newPower = 0;
+
+      for (
+        let index = 0;
+        index < compare;
+        index += 1
+      ) {
+        const a =
+          previousWave[index];
+
+        const b =
+          samples[
+          index + shift
+          ];
+
+        dot += a * b;
+        oldPower += a * a;
+        newPower += b * b;
       }
-      const score = dot / Math.sqrt(Math.max(1e-12, oldPower * newPower));
-      if (score > best) { best = score; offset = shift; }
+
+      const score =
+        dot /
+        Math.sqrt(
+          Math.max(
+            1e-12,
+            oldPower *
+            newPower,
+          ),
+        );
+
+      if (score > best) {
+        best = score;
+        offset = shift;
+      }
     }
   } else {
-    let strongest = -Infinity;
-    for (let index = 1; index <= maxOffset; index += 1) {
-      if (samples[index - 1] <= 0 && samples[index] > 0 && samples[index] - samples[index - 1] > strongest) {
-        strongest = samples[index] - samples[index - 1]; offset = index;
+    let strongest =
+      -Infinity;
+
+    for (
+      let index = 1;
+      index <= maxOffset;
+      index += 1
+    ) {
+      const rise =
+        samples[index] -
+        samples[index - 1];
+
+      if (
+        samples[index - 1] <= 0 &&
+        samples[index] > 0 &&
+        rise > strongest
+      ) {
+        strongest = rise;
+        offset = index;
       }
     }
   }
-  // 回転させません。信号が完全な周期でない場合、ライブフレームを折り返すと
-  // 右端に不連続が見えてしまいます。
-  const frame = samples.slice(offset, offset + frameLength);
-  previousWave = frame.slice(); return frame;
+
+  const frame =
+    samples.slice(
+      offset,
+      offset +
+      frameLength,
+    );
+
+  lastWaveOffset =
+    offset;
+
+  previousWave =
+    frame.slice();
+
+  return frame;
 }
 
-function drawScope(raw) {
-  const samples = phaseLockedFrame(raw); const rect = scope.getBoundingClientRect(); const ratio = devicePixelRatio || 1;
-  const width = Math.max(1, Math.round(rect.width * ratio)); const height = Math.max(1, Math.round(rect.height * ratio));
-  if (scope.width !== width || scope.height !== height) { scope.width = width; scope.height = height; }
-  const ctx = scope.getContext('2d'); ctx.clearRect(0, 0, width, height);
-  const centerY = height / 2;
-  const plotHalfHeight = Math.min(centerY, height - centerY) * .85;
-  ctx.strokeStyle = '#282828'; ctx.lineWidth = ratio;
-  ctx.beginPath(); ctx.moveTo(0, centerY); ctx.lineTo(width, centerY); ctx.stroke();
-  ctx.strokeStyle = '#a9b7e6'; ctx.lineWidth = 1.35 * ratio; ctx.beginPath(); let peak = 0;
-  samples.forEach((sample, index) => {
-    peak = Math.max(peak, Math.abs(sample)); const inset = ctx.lineWidth * .5;
-    const x = inset + index / Math.max(1, samples.length - 1) * (width - inset * 2);
-    const y = centerY - Math.max(-1.5, Math.min(1.5, sample)) / 1.5 * plotHalfHeight;
-    index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  });
-  ctx.stroke(); $('#output-meter').style.width = `${Math.min(100, peak / 1.5 * 100)}%`; $('#peak-value').textContent = peak.toFixed(2);
+function drawScope(
+  rawLeft,
+  rawRight,
+) {
+  const left =
+    phaseLockedFrame(
+      rawLeft,
+    );
+
+  const right =
+    (rawRight || [])
+      .map(
+        value =>
+          Number.isFinite(value)
+            ? value
+            : 0,
+      )
+      .slice(
+        lastWaveOffset,
+        lastWaveOffset +
+        left.length,
+      );
+
+  const rect =
+    scope.getBoundingClientRect();
+
+  const ratio =
+    devicePixelRatio || 1;
+
+  const width =
+    Math.max(
+      1,
+      Math.round(
+        rect.width *
+        ratio,
+      ),
+    );
+
+  const height =
+    Math.max(
+      1,
+      Math.round(
+        rect.height *
+        ratio,
+      ),
+    );
+
+  if (
+    scope.width !== width ||
+    scope.height !== height
+  ) {
+    scope.width = width;
+    scope.height = height;
+  }
+
+  const ctx =
+    scope.getContext('2d');
+
+  ctx.clearRect(
+    0,
+    0,
+    width,
+    height,
+  );
+
+  const centerY =
+    height / 2;
+
+  const plotHalfHeight =
+    Math.min(
+      centerY,
+      height - centerY,
+    ) * 0.85;
+
+  ctx.strokeStyle =
+    '#282828';
+
+  ctx.lineWidth =
+    ratio;
+
+  ctx.beginPath();
+
+  ctx.moveTo(
+    0,
+    centerY,
+  );
+
+  ctx.lineTo(
+    width,
+    centerY,
+  );
+
+  ctx.stroke();
+
+  let peak = 0;
+
+  const drawChannel =
+    (samples, color) => {
+      ctx.strokeStyle =
+        color;
+
+      ctx.lineWidth =
+        1.35 * ratio;
+
+      ctx.beginPath();
+
+      samples.forEach(
+        (sample, index) => {
+          peak =
+            Math.max(
+              peak,
+              Math.abs(sample),
+            );
+
+          const inset =
+            ctx.lineWidth *
+            0.5;
+
+          const x =
+            inset +
+            index /
+            Math.max(
+              1,
+              samples.length - 1,
+            ) *
+            (
+              width -
+              inset * 2
+            );
+
+          const y =
+            centerY -
+            Math.max(
+              -1.5,
+              Math.min(
+                1.5,
+                sample,
+              ),
+            ) /
+            1.5 *
+            plotHalfHeight;
+
+          if (index) {
+            ctx.lineTo(x, y);
+          } else {
+            ctx.moveTo(x, y);
+          }
+        },
+      );
+
+      ctx.stroke();
+    };
+
+  drawChannel(left, 'rgba(210, 210, 205, 0.78)');
+  drawChannel(right, 'rgba(169, 183, 230, 0.78)');
+
+  $('#output-meter')
+    .style.width =
+    `${Math.min(
+      100,
+      peak /
+      1.5 *
+      100,
+    )
+    }%`;
+
+  $('#peak-value')
+    .textContent =
+    peak.toFixed(2);
 }
 
 async function updateScope() {
   try {
-    const response = await fetch('./api/waveform', { cache: 'no-store' }); const wave = await response.json();
-    $('#scope-mode').textContent = wave.live ? `live · ${wave.activeVoices} voices` : 'compiled preview'; drawScope(wave.samples);
-  } catch { /* 次のフレームで再試行 */ }
+    const response =
+      await fetch(
+        './api/waveform',
+        {
+          cache: 'no-store',
+        },
+      );
+
+    if (!response.ok) {
+      return;
+    }
+
+    const wave =
+      await response.json();
+
+    const tap =
+      wave.tap === 'output'
+        ? 'out'
+        : 'mix + in';
+
+    $('#scope-mode')
+      .textContent =
+      wave.live
+        ? `live · ${wave.activeVoices} voices · ${tap}`
+        : `compiled preview · ${tap}`;
+
+    drawScope(
+      wave.left,
+      wave.right,
+    );
+  } catch {
+    // Retry on the next interval.
+  }
 }
 
+$$('[data-wave-tap]')
+  .forEach(
+    button => {
+      button.addEventListener(
+        'click',
+        () => {
+          const tap =
+            button.dataset.waveTap;
+
+          $$('[data-wave-tap]')
+            .forEach(
+              item => {
+                item.classList.toggle(
+                  'active',
+                  item === button,
+                );
+              },
+            );
+
+          send({
+            cmd: 'setWaveformTap',
+            tap,
+          });
+
+          void updateScope();
+        },
+      );
+    },
+  );
+
+// -----------------------------------------------------------------------------
+// Startup
+// -----------------------------------------------------------------------------
+
 buildKeyboard();
-window.__CODE_SYNTH_UI_READY__ = true;
+syncEndpointUi(editor.getValue());
+
+window.__CODE_SYNTH_UI_READY__ =
+  true;
+
 $('#boot-status')?.remove();
-send({ cmd: 'uiReady' });
-pollState(); updateScope();
-setInterval(pollState, 80);
-setInterval(updateScope, 40);
+
+send({
+  cmd: 'uiReady',
+});
+
+void pollState();
+void updateScope();
+
+setInterval(
+  () => void pollState(),
+  POLL_INTERVAL_MS,
+);
+
+setInterval(
+  () => void updateScope(),
+  SCOPE_INTERVAL_MS,
+);

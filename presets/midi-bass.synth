@@ -2,6 +2,8 @@ p.gain = param(0.72, 0, 1.4, 0.01)
 p.drive = param(1.8, 0.4, 5, 0.01)
 p.release_s = param(0.32, 0.04, 3, 0.01)
 p.pulse_width = param(0.42, 0.08, 0.92, 0.01)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / (0.012 - 0.008 * in.s), 1)
     release = exp(-8 * in.l / p.release_s)

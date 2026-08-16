@@ -7,17 +7,23 @@ p.echo_mix = param(0.36, 0, 0.9, 0.01)
 p.feedback = param(0.52, 0, 0.92, 0.01)
 p.wow = param(0.25, 0, 1, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-7 * in.l / p.release_s)
     raw = saw(in.freq, in.t) + 0.18 * sin(TAU * in.freq * 0.5 * in.t)
     tone = filter.onepole.lp(saturate(raw, 1.8), p.tone_hz, in.sr)
-    out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
-    out.pan = in.midi_pan
+    amp = p.gain * in.s * in.vol * in.mexpr * attack * release * tone
+    out.wave_l = amp * pan_l(in.midi_pan)
+    out.wave_r = amp * pan_r(in.midi_pan)
     out.l_limit = p.release_s
 }
 
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     # filterではtransportのppqを使えるため、wowもDAW transportへ同期します。
     mod_l = 280ms + p.wow * 16ms * sin(TAU * 0.17 * in.ppq)
     mod_r = 420ms + p.wow * 19ms * sin(TAU * 0.13 * in.ppq + 1.3)

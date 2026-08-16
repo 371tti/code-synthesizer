@@ -13,7 +13,8 @@ p.drive = param(1.45, 0.5, 6, 0.01)
 p.vibrato_hz = param(5.4, 0.1, 12, 0.1)
 p.vibrato_cent = param(18, 0, 100, 0.1)
 p.pressure_vibrato = param(0.65, 0, 1, 0.01)
-p.pan = param(0, -1, 1, 0.01)
+
+note.out.layout = mono
 
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
@@ -28,6 +29,6 @@ fn note(in, p) -> out {
     cutoff = mix(380, 8500, p.brightness)
     tone = filter.svf.lp(drive(raw, p.drive), cutoff, 0.75, in.sr)
     out.wave = p.gain * in.s * in.vol * in.mexpr * attack * decay * release * tone
-    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

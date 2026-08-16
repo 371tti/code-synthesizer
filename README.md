@@ -15,7 +15,7 @@ README で定義していた最初の MVP は実装済みです。
 - 非 RT スレッドでのコンパイルと Audio block 境界での hot reload
 - phase lock 付き live 波形、プリセット、プレビュー鍵盤
 - `p.*` ユーザーパラメータ、MIDI CC link、配置可能な knob / slider / toggle、VST3 automation
-- `fn note` / optional `fn filter`、user function、true stereo、3 domain persistent state、transactional `RingBuf`
+- `fn note` / optional `fn effect`、user function、true stereo、entrypoint分離persistent state、transactional `RingBuf`
 - ソース、パラメータ値、Play レイアウト、画面モードを含む plugin state 保存・復元
 
 ## ギャラリー
@@ -87,6 +87,8 @@ version はルート `Cargo.toml` の `[workspace.package]` にある `version` 
 プラグイン画面の Editor モードで DSL を編集すると、260 ms の debounce 後に自動コンパイルされます。成功したプログラムだけが Audio block 境界で DSP へ渡されるため、編集中に構文エラーがあっても直前の正常な音は継続します。Monaco には DSL 補完、snippet、hover、引数ヒント、コンパイラ marker、候補名の quick fix が入っています。
 
 ```text
+note.out.layout = mono
+
 p.attack_ms = param(8.33, 1, 200, 0.1)
 p.release_s = param(1.5, 0.1, 6, 0.01)
 p.gain = param(1, 0, 1.5, 0.01, 7)
@@ -96,7 +98,6 @@ fn note(in, p) -> out {
     release = exp(-9 * in.l / p.release_s)
     out.wave = p.gain * in.s * in.vol * in.mexpr * attack * release
         * sin(TAU * in.freq * in.t)
-    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }
 ```
@@ -105,7 +106,7 @@ fn note(in, p) -> out {
 
 Play の `Guide` では記法、意味の作り方、配置、automationを確認できます。`Arrange` 中はドラッグで移動、右下ハンドルでリサイズします。位置・大きさ・表示形式はプロジェクトに保存されます。右クリックでは reset、値の copy/paste、knob / slider / toggle の切替を行えます。
 
-`Parameter Guide` はparameter、通常関数、qualified bundle、persistent scalar、true stereo、RingBuf、post-mix filterをコメントで解説する実行可能なサンプルです。v2ではengineがMIDI gain/panを暗黙適用しないため、`in.vol`、`in.mexpr`、`in.midi_pan` はDSLで明示的に使用します。
+`Parameter Guide` はparameter、通常関数、qualified bundle、persistent scalar、stereo、RingBuf、post-mix effectをコメントで解説する実行可能なサンプルです。`note.out.layout = mono|stereo` を宣言し、effectを使う場合は `effect.in.layout` と `effect.out.layout` も明示します。mono noteだけが任意の `out.pan` を使えます。
 
 Factory Presetsは32種類です。Basic、Lead、Pluck、Bass、Keys、Pad、Ensemble、Percussionなどの分類を内包したProgram menuから選択できます。基本音作り向けの`Basic Synth`と`SuperSaw`に加え、`Wavefold Lead`、`Glass Pluck`、`Resonant Bells`、`Lo-Fi Keys`、`Deep Space`、`Tape Echo`、`Phase Motion`、`Metal Drum`を収録しています。新しい音色ではKarplus-Strong、modal resonator、filter、multitap delay、reverb、waveshaperなどの標準DSPを実用例として使っています。
 
@@ -115,15 +116,15 @@ Preset panelのNameへ名前を入力して`Save`すると、現在のコード�
 
 ## DSL リファレンス
 
-programには `fn note(in, p) -> out` がちょうど1つ必要で、`fn filter(in, p) -> out` は省略できます。通常関数は `fn name(in) -> out` と定義し、`result = name(input_bundle)` と呼びます。forward referenceは可能、recursionはcompile errorです。
+programには `note.out.layout = mono|stereo` とちょうど1つの `fn note(in, p) -> out` が必要です。`fn effect(in, p) -> out` を定義する場合は、その直前までに `effect.in.layout = mono|stereo` と `effect.out.layout = mono|stereo` を指定します。audio inputはnote mixへ加算されてからeffectへ入ります。
 
 localはstatement順に再代入できます。比較はf32の0/1を返します。`#` と `//` は行コメントです。`2s`、`500ms`、`250us` の時間suffixと `k/m/u/g` のSI suffixを利用できます。
 
-persistent scalarは初期値必須です。`voice` はVoice slot、`note` は `(channel,note)`、`global` はplugin instanceで共有します。RingBufはsample単位でtransactionalに動作します。
+persistent scalarは初期値必須です。`note` call treeではVoice slotごとの`voice` storageだけを、post-mixの`filter` call treeではplugin instance共有の`global` storageだけを使用できます。RingBufはsample単位でtransactionalに動作します。
 
 ```text
 f32 voice phase = 0
-f32 note energy = 0
+// fn effect(in, p) -> out 内でのみ宣言・使用可能
 f32 global master = 1
 RingBuf<f32, 180ms> global delay
 ```
@@ -132,24 +133,26 @@ RingBuf<f32, 180ms> global delay
 
 主要入力:
 
-| 名前                                         | 内容                                  |
-| -------------------------------------------- | ------------------------------------- |
-| `in.t` / `in.l` / `in.s`                    | Note On秒、Note Off秒、Velocity       |
-| `in.freq` / `in.note` / `in.ch`             | 周波数、MIDI note、MIDI channel       |
-| `in.bend` / `in.bend_st`                    | Pitch Bend `-1..1`、半音換算値        |
-| `in.mw` / `in.vol` / `in.midi_pan` / `in.mexpr` | CC 1 / 7 / 10 / 11               |
-| `in.sustain` / pressure fields              | Sustain / Channel / Poly Pressure     |
-| `in.program` / `in.cc(n)`                   | Program Change、任意 CC               |
-| `in.sr` / transport fields                  | Sample rate / DAW transport           |
-| `in.voice` / `in.rand`                      | Voice index / Voice固有乱数           |
+| 名前                                            | 内容                              |
+| ----------------------------------------------- | --------------------------------- |
+| `in.t` / `in.l` / `in.s`                        | Note On秒、Note Off秒、Velocity   |
+| `in.freq` / `in.note` / `in.ch`                 | 周波数、MIDI note、MIDI channel   |
+| `in.bend` / `in.bend_st`                        | Pitch Bend `-1..1`、半音換算値    |
+| `in.mw` / `in.vol` / `in.midi_pan` / `in.mexpr` | CC 1 / 7 / 10 / 11                |
+| `in.sustain` / pressure fields                  | Sustain / Channel / Poly Pressure |
+| `in.program` / `in.cc(n)`                       | Program Change、任意 CC           |
+| `in.sr` / transport fields                      | Sample rate / DAW transport       |
+| `in.voice` / `in.rand`                          | Voice index / Voice固有乱数       |
 
 出力:
 
-| 名前      | 内容                                     |
-| --------- | ---------------------------------------- |
-| `out.wave` / `out.pan` | mono Voice波形 / pan |
-| `out.wave_l` / `out.wave_r` | true stereo Voice波形 |
-| `out.l_limit` | Note Off後にVoiceを終了する秒数。必須 |
+| 名前                        | 内容                                                        |
+| --------------------------- | ----------------------------------------------------------- |
+| `note.out.layout = mono`    | `out.wave`、任意の `out.pan`、`out.l_limit`                 |
+| `note.out.layout = stereo`  | `out.wave_l`、`out.wave_r`、`out.l_limit`。panは使用不可    |
+| `effect.in.layout = mono`   | `in.wave`。note mix + audio inputのdownmix                  |
+| `effect.in.layout = stereo` | `in.wave_l` / `in.wave_r`                                   |
+| `effect.out.layout`         | monoなら `out.wave`、stereoなら `out.wave_l` / `out.wave_r` |
 
 定数は `TAU`、`PI`、`E`、`PHI`、演算子は `+ - * / % ^` を使用できます。
 
@@ -203,7 +206,7 @@ Audio callback 内では次を行いません。
 - filesystem、WebView、JSON、DSL parsing
 - program の破棄や重い初期化
 
-VoiceとNote-domain slotは固定容量です。UI thread がCraneliftでネイティブコード化し、persistent stateを準備した `ProgramInstance` をbounded lock-free queueへpublishします。Audio threadはblock先頭でpointerを交換し、1 sampleでは生成済みnote/filter関数と固定state descriptorだけを使用します。旧programと実行メモリは別queueへ返し、UI thread側で破棄します。`p.*` の値とoscilloscope ring bufferはatomicな固定容量storageで共有します。
+Voice slotは固定容量です。UI threadがCraneliftのnative note/filter block kernelと各worker用runtimeを事前生成し、bounded lock-free queueへpublishします。Audio threadはblock先頭でruntimeを交換し、MIDI境界ごとに固定affinity workerへblock jobを1回ずつdispatchします。worker-local mixを番号順にreduceした後、main threadでglobal filter blockを処理します。旧programとworker runtimeは別queueへ返し、UI thread側で破棄します。`p.*` の値とoscilloscope ring bufferはatomicな固定容量storageで共有します。
 
 ## えとせとら
 

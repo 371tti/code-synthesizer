@@ -11,7 +11,8 @@ p.body_mix = param(0.35, 0, 1, 0.01)
 p.tremolo_hz = param(4.7, 0.1, 10, 0.1)
 p.tremolo_depth = param(0.18, 0, 1, 0.01)
 p.velocity_tone = param(0.7, 0, 1, 0.01)
-p.pan = param(0, -1, 1, 0.01)
+
+note.out.layout = mono
 
 fn note(in, p) -> out {
     decay = p.sustain + (1 - p.sustain) * exp(-4 * in.t / p.decay_s)
@@ -23,6 +24,6 @@ fn note(in, p) -> out {
     raw = p.tine_mix * tine + p.body_mix * body
     tone = tremolo(filter.onepole.lp(raw, 7200, in.sr), p.tremolo_hz, p.tremolo_depth)
     out.wave = p.gain * in.s * in.vol * in.mexpr * decay * release * tone
-    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

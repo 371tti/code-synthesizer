@@ -22,8 +22,17 @@ pub(crate) struct Literal {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProgramAst {
+    pub note_output_layout: ChannelLayout,
+    pub effect_input_layout: Option<ChannelLayout>,
+    pub effect_output_layout: Option<ChannelLayout>,
     pub parameters: Vec<ParameterDecl>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChannelLayout {
+    Mono,
+    Stereo,
 }
 
 #[derive(Clone, Debug)]
@@ -460,12 +469,103 @@ impl Parser {
     }
 
     fn parse_program(mut self) -> Result<ProgramAst, CompileError> {
+        let mut note_output_layout = None;
+        let mut effect_input_layout = None;
+        let mut effect_output_layout = None;
         let mut parameters = Vec::new();
-        let mut functions = Vec::new();
+        let mut functions: Vec<Function> = Vec::new();
         let mut saw_function = false;
         self.skip_newlines();
         while !self.at_eof() {
-            if self.at_ident("fn") {
+            if self.at_ident("mode") {
+                return Err(self.error_here(
+                    "`mode mono/stereo` は廃止されました。note.out.layout = mono|stereo を指定してください",
+                ));
+            } else if self.at_ident("note") || self.at_ident("effect") {
+                let statement = self.parse_assignment()?;
+                let Statement::Assignment {
+                    targets,
+                    value,
+                    span,
+                } = statement
+                else {
+                    unreachable!();
+                };
+                if targets.len() != 1 {
+                    return Err(CompileError::new(
+                        "layout宣言は1つのfieldへ代入してください",
+                        span.line,
+                        span.column,
+                    ));
+                }
+                let Expr::Name(value, _) = value else {
+                    return Err(CompileError::new(
+                        "layoutには mono または stereo を指定してください",
+                        span.line,
+                        span.column,
+                    ));
+                };
+                let layout = match value.as_str() {
+                    "mono" => ChannelLayout::Mono,
+                    "stereo" => ChannelLayout::Stereo,
+                    _ => {
+                        return Err(CompileError::new(
+                            "layoutには mono または stereo を指定してください",
+                            span.line,
+                            span.column,
+                        ));
+                    }
+                };
+                let target = &targets[0];
+                let destination = match target.as_str() {
+                    "note.out.layout"
+                        if !functions
+                            .iter()
+                            .any(|function| matches!(function.name.as_str(), "note")) =>
+                    {
+                        &mut note_output_layout
+                    }
+                    "effect.in.layout" | "effect.out.layout"
+                        if !functions
+                            .iter()
+                            .any(|function| matches!(function.name.as_str(), "effect")) =>
+                    {
+                        if target == "effect.in.layout" {
+                            &mut effect_input_layout
+                        } else {
+                            &mut effect_output_layout
+                        }
+                    }
+                    "note.out.layout" => {
+                        return Err(CompileError::new(
+                            "note.out.layout は fn note より前に置く必要があります",
+                            span.line,
+                            span.column,
+                        ));
+                    }
+                    "effect.in.layout" | "effect.out.layout" => {
+                        return Err(CompileError::new(
+                            "effect layout は fn effect より前に置く必要があります",
+                            span.line,
+                            span.column,
+                        ));
+                    }
+                    _ => {
+                        return Err(CompileError::new(
+                            "layout宣言は note.out.layout / effect.in.layout / effect.out.layout のいずれかです",
+                            span.line,
+                            span.column,
+                        ));
+                    }
+                };
+                if destination.replace(layout).is_some() {
+                    return Err(CompileError::new(
+                        format!("{target} は1つだけ宣言できます"),
+                        span.line,
+                        span.column,
+                    ));
+                }
+            } else if self.at_ident("fn") {
                 saw_function = true;
                 functions.push(self.parse_function()?);
             } else {
@@ -515,7 +615,22 @@ impl Parser {
             }
             self.skip_newlines();
         }
+        let note_output_layout = if functions.iter().any(|f| f.name == "note") {
+            note_output_layout.ok_or_else(|| {
+                CompileError::new(
+                    "最初のfnより前に `note.out.layout = mono` または `stereo` を宣言してください",
+                    1,
+                    1,
+                )
+            })?
+        } else {
+            // If there's no `fn note`, the note output layout is irrelevant; default to mono.
+            note_output_layout.unwrap_or(ChannelLayout::Mono)
+        };
         Ok(ProgramAst {
+            note_output_layout,
+            effect_input_layout,
+            effect_output_layout,
             parameters,
             functions,
         })
@@ -848,6 +963,8 @@ mod tests {
     fn parses_parameters_functions_storage_and_chain_assignment() {
         let ast = parse(
             r#"
+note.out.layout = stereo
+
 p.cutoff = param(2k, 20, 20k, 1, 74)
 
 fn note(in, p) -> out {
@@ -868,7 +985,7 @@ fn note(in, p) -> out {
     #[test]
     fn rejects_parameter_after_function() {
         let error =
-            parse("fn note(in, p) -> out { out.wave = 0 out.l_limit = 1 }\np.x = param(1,0,2,1)")
+            parse("note.out.layout = mono\nfn note(in, p) -> out { out.wave = 0 out.l_limit = 1 }\np.x = param(1,0,2,1)")
                 .unwrap_err();
         assert!(error.message.contains("最初のfnより前"));
     }

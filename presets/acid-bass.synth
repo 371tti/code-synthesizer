@@ -13,6 +13,8 @@ p.pulse_width = param(0.43, 0.08, 0.92, 0.01)
 p.drive = param(2.1, 0.5, 8, 0.01)
 p.accent = param(0.45, 0, 1, 0.01)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     body_env = p.sustain + (1 - p.sustain) * exp(-6 * in.t / p.decay_s)

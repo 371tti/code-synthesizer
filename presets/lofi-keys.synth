@@ -8,6 +8,8 @@ p.tone_hz = param(4200, 200, 14000, 1, 74)
 p.wobble_hz = param(3.8, 0.1, 12, 0.1)
 p.wobble_depth = param(0.15, 0, 1, 0.01)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     env = exp(-5 * in.t / p.decay_s) * exp(-8 * in.l / p.release_s)
     raw = 0.7 * triangle(in.freq, in.t) + 0.25 * pulse(in.freq * 2, in.t, 0.32)

@@ -8,6 +8,8 @@ p.flange_depth_ms = param(3.4, 0, 15, 0.1)
 p.flange_feedback = param(0.32, 0, 0.9, 0.01)
 p.tone_hz = param(6500, 100, 16000, 1, 74)
 
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-7 * in.l / p.release_s)

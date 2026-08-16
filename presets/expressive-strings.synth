@@ -3,6 +3,8 @@ p.attack_s = param(0.18, 0.01, 3, 0.01)
 p.release_s = param(2.8, 0.2, 10, 0.01)
 p.bow = param(0.55, 0, 1, 0.01)
 p.spread = param(0.28, 0, 1, 0.01)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-7 * in.l / p.release_s)
@@ -12,6 +14,6 @@ fn note(in, p) -> out {
     brightness = 0.12 + 0.35 * in.cc(74)
     string = sin(phase) + bow * 0.32 * sin(phase * 2) + brightness * sin(phase * 3)
     out.wave = 0.58 * in.s * in.vol * in.mexpr * attack * release * tanh(1.35 * string)
-    out.pan = in.midi_pan + p.spread * sin(in.voice * 2.1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

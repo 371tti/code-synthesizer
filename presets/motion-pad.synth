@@ -3,6 +3,8 @@ p.attack_s = param(0.8, 0.03, 6, 0.01)
 p.release_s = param(4.5, 0.3, 14, 0.01)
 p.motion = param(0.35, 0, 1, 0.01)
 p.spread = param(0.4, 0, 1, 0.01)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     release = exp(-7 * in.l / p.release_s)
@@ -14,6 +16,6 @@ fn note(in, p) -> out {
     air_osc = air * sin(TAU * in.freq * 2 * in.t + motion * 1.7)
     out.wave = 0.42 * in.s * in.vol * in.mexpr * attack * release
         * (left_osc + right_osc + air_osc)
-    out.pan = in.midi_pan + p.spread * sin(in.voice * 1.9)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

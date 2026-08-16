@@ -19,9 +19,14 @@ use std::{
     fmt,
     sync::Arc,
 };
-use syntax::{BinaryOp, Expr, Function, LiteralUnit, ProgramAst, Span, Statement, UnaryOp};
+use syntax::{
+    BinaryOp, ChannelLayout as AstChannelLayout, Expr, Function, LiteralUnit, ProgramAst, Span,
+    Statement, UnaryOp,
+};
 
 pub const MAX_USER_PARAMETERS: usize = 32;
+/// Fallback used when an interactive/offline evaluation does not provide a rate.
+pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 const VARIABLE_WARNING_THRESHOLD: usize = 64;
 const OPERATION_WARNING_THRESHOLD: usize = 512;
 const STACK_WARNING_THRESHOLD: usize = 128;
@@ -54,6 +59,7 @@ pub struct Inputs {
     pub playing: f32,
     pub voice: f32,
     pub rand: f32,
+    pub wave: f32,
     pub wave_l: f32,
     pub wave_r: f32,
     pub cc: [f32; 128],
@@ -79,7 +85,7 @@ impl Default for Inputs {
             pressure: 0.0,
             poly_pressure: 0.0,
             program: 0.0,
-            sr: 0.0,
+            sr: DEFAULT_SAMPLE_RATE,
             tempo: 0.0,
             beat: 0.0,
             bar: 0.0,
@@ -87,6 +93,7 @@ impl Default for Inputs {
             playing: 0.0,
             voice: 0.0,
             rand: 0.0,
+            wave: 0.0,
             wave_l: 0.0,
             wave_r: 0.0,
             cc: [0.0; 128],
@@ -130,10 +137,12 @@ pub struct Outputs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoteOutputMode {
+pub enum ChannelLayout {
     Mono,
     Stereo,
 }
+
+pub type NoteOutputMode = ChannelLayout;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompileError {
@@ -194,6 +203,7 @@ pub(crate) enum InputId {
     Playing,
     Voice,
     Rand,
+    Wave,
     WaveL,
     WaveR,
 }
@@ -315,7 +325,10 @@ pub(crate) enum EntryOutputs {
         wave_r: usize,
         l_limit: usize,
     },
-    Filter {
+    FilterMono {
+        wave: usize,
+    },
+    FilterStereo {
         wave_l: usize,
         wave_r: usize,
     },
@@ -337,6 +350,8 @@ pub struct Program {
     performance_warnings: Vec<String>,
     parameters: Vec<ParameterSpec>,
     note_output_mode: NoteOutputMode,
+    effect_input_layout: ChannelLayout,
+    effect_output_layout: ChannelLayout,
     parallel_voice_safe: bool,
     jit: Arc<jit::JitProgram>,
 }
@@ -354,8 +369,8 @@ impl Program {
             sample_rate,
         })
     }
-    /// Worker用instanceです。Voice stateとGlobal scalarは共有し、Global
-    /// RingBuf/DSPはworkerごとのrelaxed shardとして準備されます。
+    /// Worker用instanceです。note()から到達できるstateはvoice domainに
+    /// 制限されているため、各workerは担当voice slotだけを更新します。
     pub fn instantiate_worker(
         &self,
         sample_rate: f32,
@@ -369,17 +384,20 @@ impl Program {
         })
     }
     pub fn evaluate(&self, input: &Inputs) -> Outputs {
+        let sample_rate = sample_rate_or_default(input.sr);
         let mut instance = self
-            .instantiate(input.sr.max(48_000.0), None)
+            .instantiate(sample_rate, None)
             .expect("compiled program must prepare");
-        instance.evaluate_note(input, 0, 0)
+        let mut input = *input;
+        input.sr = sample_rate;
+        instance.evaluate_note(&input, 0)
     }
     pub fn evaluation_scratch(&self) -> EvaluationScratch {
         EvaluationScratch::default()
     }
     pub fn evaluate_with(&self, input: &Inputs, scratch: &mut EvaluationScratch) -> Outputs {
         let identity = Arc::as_ptr(&self.jit) as usize;
-        let sample_rate = input.sr.max(48_000.0);
+        let sample_rate = sample_rate_or_default(input.sr);
         let recreate = scratch.identity != identity
             || scratch
                 .instance
@@ -393,9 +411,10 @@ impl Program {
             .instance
             .as_mut()
             .map_or_else(Outputs::default, |instance| {
-                let output = instance.evaluate_note(input, 0, 0);
+                let mut input = *input;
+                input.sr = sample_rate;
+                let output = instance.evaluate_note(&input, 0);
                 instance.commit_voice(0);
-                instance.commit_note(0);
                 instance.commit_global();
                 output
             })
@@ -418,12 +437,20 @@ impl Program {
     pub fn note_output_mode(&self) -> NoteOutputMode {
         self.note_output_mode
     }
+    pub fn note_output_layout(&self) -> ChannelLayout {
+        self.note_output_mode
+    }
+    pub fn effect_input_layout(&self) -> ChannelLayout {
+        self.effect_input_layout
+    }
+    pub fn effect_output_layout(&self) -> ChannelLayout {
+        self.effect_output_layout
+    }
     pub fn has_filter(&self) -> bool {
         self.has_filter
     }
-    /// `note` がworkerから同時評価できるかを表します。Global Ring/DSPは
-    /// workerごとのrelaxed shardとして扱われ、同一noteで共有されるNote
-    /// stateだけが直列fallbackになります。
+    /// `note` がvoice-affine workerから同時評価できるかを表します。
+    /// 現行DSLではnote call treeがvoice stateだけに制限されるため常にtrueです。
     pub fn parallel_voice_safe(&self) -> bool {
         self.parallel_voice_safe
     }
@@ -444,34 +471,70 @@ pub struct ProgramInstance {
 
 impl ProgramInstance {
     #[inline]
-    pub fn evaluate_note(
-        &mut self,
-        input: &Inputs,
-        voice_slot: usize,
-        note_slot: usize,
-    ) -> Outputs {
-        let mut context = self.state.context(voice_slot, note_slot);
+    pub fn evaluate_note(&mut self, input: &Inputs, voice_slot: usize) -> Outputs {
+        let mut context = self.state.context(voice_slot);
         self.program.jit.evaluate_note(input, &mut context)
     }
     #[inline]
     pub fn evaluate_filter(&mut self, input: &Inputs) -> Outputs {
         if !self.program.has_filter() {
-            return Outputs {
-                wave_l: input.wave_l,
-                wave_r: input.wave_r,
-                ..Outputs::default()
+            return match self.program.effect_output_layout() {
+                ChannelLayout::Mono => Outputs {
+                    wave: input.wave,
+                    ..Outputs::default()
+                },
+                ChannelLayout::Stereo => Outputs {
+                    wave_l: input.wave_l,
+                    wave_r: input.wave_r,
+                    ..Outputs::default()
+                },
             };
         }
-        let mut context = self.state.context(0, 0);
+        let mut context = self.state.context(0);
         self.program.jit.evaluate_filter(input, &mut context)
+    }
+    /// Evaluates consecutive frames for one voice. The caller supplies
+    /// frame-varying inputs; voice RingBuf commits happen between frames.
+    pub fn evaluate_note_block(
+        &mut self,
+        inputs: &[Inputs],
+        outputs: &mut [Outputs],
+        voice_slot: usize,
+    ) {
+        assert_eq!(inputs.len(), outputs.len());
+        let mut context = self.state.context(voice_slot);
+        self.program
+            .jit
+            .evaluate_note_block(inputs, outputs, &mut context);
+    }
+    /// Evaluates consecutive post-mix frames. Global RingBuf commits happen
+    /// between frames, so this is equivalent to scalar filter evaluation.
+    pub fn evaluate_filter_block(&mut self, inputs: &[Inputs], outputs: &mut [Outputs]) {
+        assert_eq!(inputs.len(), outputs.len());
+        if !self.program.has_filter() {
+            for (input, output) in inputs.iter().zip(outputs) {
+                *output = match self.program.effect_output_layout() {
+                    ChannelLayout::Mono => Outputs {
+                        wave: input.wave,
+                        ..Outputs::default()
+                    },
+                    ChannelLayout::Stereo => Outputs {
+                        wave_l: input.wave_l,
+                        wave_r: input.wave_r,
+                        ..Outputs::default()
+                    },
+                };
+            }
+            return;
+        }
+        let mut context = self.state.context(0);
+        self.program
+            .jit
+            .evaluate_filter_block(inputs, outputs, &mut context);
     }
     #[inline]
     pub fn commit_voice(&mut self, slot: usize) {
         self.state.commit_voice(slot);
-    }
-    #[inline]
-    pub fn commit_note(&mut self, slot: usize) {
-        self.state.commit_note(slot);
     }
     #[inline]
     pub fn commit_global(&mut self) {
@@ -479,9 +542,6 @@ impl ProgramInstance {
     }
     pub fn reset_voice(&mut self, slot: usize) {
         self.state.reset_voice(slot);
-    }
-    pub fn reset_note(&mut self, slot: usize) {
-        self.state.reset_note(slot);
     }
     pub fn reset_all(&mut self) {
         self.state.reset_all();
@@ -505,6 +565,14 @@ fn sanitize_sample_rate(sample_rate: f32) -> Result<f32, String> {
     }
 }
 
+/// Returns a usable rate for callers that cannot surface a validation error.
+///
+/// Instance creation remains strict; this is only for convenience evaluation
+/// paths where [`Inputs::default`] is valid input.
+pub fn sample_rate_or_default(sample_rate: f32) -> f32 {
+    sanitize_sample_rate(sample_rate).unwrap_or(DEFAULT_SAMPLE_RATE)
+}
+
 pub struct Compiler;
 impl Compiler {
     pub fn new() -> Self {
@@ -521,6 +589,10 @@ impl Default for Compiler {
 }
 
 fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
+    let output_mode = match ast.note_output_layout {
+        AstChannelLayout::Mono => ChannelLayout::Mono,
+        AstChannelLayout::Stereo => ChannelLayout::Stereo,
+    };
     let parameters = compile_parameters(ast)?;
     let parameter_indices = parameters
         .iter()
@@ -546,26 +618,111 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
         validate_function_signature(function)?;
     }
     validate_call_graph(ast, &function_indices)?;
-    let note_index = function_indices.get("note").copied().ok_or_else(|| {
-        CompileError::new("fn note(in, p) -> out が必要です", 1, 1)
-            .with_hint("すべてのprogramにnote Entry Pointを1つ定義してください")
-    })?;
-    let filter_index = function_indices.get("filter").copied();
+    let note_index_opt = function_indices.get("note").copied();
+    if function_indices.contains_key("filter") {
+        return Err(CompileError::new(
+            "fn filter は廃止されました。代わりに fn effect を使用してください",
+            1,
+            1,
+        ));
+    }
+    let filter_index = function_indices.get("effect").copied();
+    let layout = |layout: AstChannelLayout| match layout {
+        AstChannelLayout::Mono => ChannelLayout::Mono,
+        AstChannelLayout::Stereo => ChannelLayout::Stereo,
+    };
+    let effect_input_layout = if filter_index.is_some() {
+        layout(ast.effect_input_layout.ok_or_else(|| {
+            CompileError::new("fn effect がある場合は effect.in.layout が必要です", 1, 1)
+        })?)
+    } else {
+        if ast.effect_input_layout.is_some() || ast.effect_output_layout.is_some() {
+            return Err(CompileError::new(
+                "effect layoutは fn effect(in, p) -> out と一緒に宣言してください",
+                1,
+                1,
+            ));
+        }
+        ChannelLayout::Stereo
+    };
+    let effect_output_layout = if filter_index.is_some() {
+        layout(ast.effect_output_layout.ok_or_else(|| {
+            CompileError::new("fn effect がある場合は effect.out.layout が必要です", 1, 1)
+        })?)
+    } else {
+        ChannelLayout::Stereo
+    };
     let (schema, storage_indices, dsp_indices) =
-        collect_storage(ast, &function_indices, note_index, filter_index)?;
+        collect_storage(ast, &function_indices, note_index_opt, filter_index)?;
     let state_schema: Arc<[StorageSpec]> = schema.into();
 
-    let mut lowerer = Lowerer::new(
-        ast,
-        &function_indices,
-        &parameter_indices,
-        &parameters,
-        &storage_indices,
-        &dsp_indices,
-        &state_schema,
-        EntryKind::Note,
-    );
-    let note = lowerer.lower_entry(note_index)?;
+    let note = if let Some(note_index) = note_index_opt {
+        let mut lowerer = Lowerer::new(
+            ast,
+            &function_indices,
+            &parameter_indices,
+            &parameters,
+            &storage_indices,
+            &dsp_indices,
+            &state_schema,
+            EntryKind::Note,
+            output_mode,
+            output_mode,
+        );
+        lowerer.lower_entry(note_index)?
+    } else {
+        // synthesize a trivial note entry that outputs silence matching note_output_layout
+        match output_mode {
+            ChannelLayout::Mono => {
+                // variables: wave=0, l_limit=1
+                let assignments = vec![
+                    Assignment {
+                        target: AssignmentTarget::Variable(0),
+                        code: vec![Op::Push(ValueRef::Constant(0.0))],
+                    },
+                    Assignment {
+                        target: AssignmentTarget::Variable(1),
+                        code: vec![Op::Push(ValueRef::Constant(0.0))],
+                    },
+                ];
+                EntryPlan {
+                    assignments,
+                    variable_count: 2,
+                    outputs: EntryOutputs::NoteMono {
+                        wave: 0,
+                        pan: None,
+                        l_limit: 1,
+                    },
+                }
+            }
+            ChannelLayout::Stereo => {
+                // variables: wave_l=0, wave_r=1, l_limit=2
+                let assignments = vec![
+                    Assignment {
+                        target: AssignmentTarget::Variable(0),
+                        code: vec![Op::Push(ValueRef::Constant(0.0))],
+                    },
+                    Assignment {
+                        target: AssignmentTarget::Variable(1),
+                        code: vec![Op::Push(ValueRef::Constant(0.0))],
+                    },
+                    Assignment {
+                        target: AssignmentTarget::Variable(2),
+                        code: vec![Op::Push(ValueRef::Constant(0.0))],
+                    },
+                ];
+                EntryPlan {
+                    assignments,
+                    variable_count: 3,
+                    outputs: EntryOutputs::NoteStereo {
+                        wave_l: 0,
+                        wave_r: 1,
+                        l_limit: 2,
+                    },
+                }
+            }
+        }
+    };
     let filter = if let Some(index) = filter_index {
         let mut lowerer = Lowerer::new(
             ast,
@@ -576,15 +733,12 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
             &dsp_indices,
             &state_schema,
             EntryKind::Filter,
+            effect_input_layout,
+            effect_output_layout,
         );
         Some(lowerer.lower_entry(index)?)
     } else {
         None
-    };
-    let note_output_mode = match note.outputs {
-        EntryOutputs::NoteMono { .. } => NoteOutputMode::Mono,
-        EntryOutputs::NoteStereo { .. } => NoteOutputMode::Stereo,
-        EntryOutputs::Filter { .. } => unreachable!(),
     };
     let variable_count = note.variable_count + filter.as_ref().map_or(0, |e| e.variable_count);
     let operation_count = note
@@ -618,7 +772,7 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
     }
     if state_schema.len() > STORAGE_WARNING_THRESHOLD {
         performance_warnings.push(format!(
-            "persistent storageが {} 個あります。特にVoice/Note RingBufはメモリ使用量へ影響します。",
+            "persistent storageが {} 個あります。特にVoice RingBufはメモリ使用量へ影響します。",
             state_schema.len()
         ));
     }
@@ -628,7 +782,7 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
         } = storage.kind
         {
             let instances = match storage.domain {
-                StorageDomain::Voice | StorageDomain::Note => RUNTIME_STATE_SLOTS,
+                StorageDomain::Voice => RUNTIME_STATE_SLOTS,
                 StorageDomain::Global => 1,
             };
             let bytes = f64::from(seconds) * 48_000.0 * instances as f64 * 4.0;
@@ -642,7 +796,7 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
         }
         if let StorageKind::Dsp { kind } = storage.kind {
             let instances = match storage.domain {
-                StorageDomain::Voice | StorageDomain::Note => RUNTIME_STATE_SLOTS,
+                StorageDomain::Voice => RUNTIME_STATE_SLOTS,
                 StorageDomain::Global => 1,
             };
             let seconds = kind.ring_durations().iter().sum::<f32>();
@@ -662,37 +816,16 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
     })?;
     Ok(Program {
         has_filter: filter.is_some(),
-        parallel_voice_safe: note_parallel_safe(&note, &state_schema),
+        parallel_voice_safe: true,
         state_schema,
         variable_count,
         operation_count,
         performance_warnings,
         parameters,
-        note_output_mode,
+        note_output_mode: output_mode,
+        effect_input_layout,
+        effect_output_layout,
         jit: Arc::new(jit),
-    })
-}
-
-fn note_parallel_safe(note: &EntryPlan, schema: &[StorageSpec]) -> bool {
-    let permits = |index: usize| {
-        schema
-            .get(index)
-            .is_some_and(|storage| !matches!(storage.domain, StorageDomain::Note))
-    };
-    note.assignments.iter().all(|assignment| {
-        let target_safe = match assignment.target {
-            AssignmentTarget::Variable(_) => true,
-            AssignmentTarget::State(index) => permits(index),
-        };
-        target_safe
-            && assignment.code.iter().all(|operation| match operation {
-                Op::Push(ValueRef::State(index))
-                | Op::Dsp { index, .. }
-                | Op::RingPeek { index, .. }
-                | Op::RingLen { index }
-                | Op::RingDuration { index } => permits(*index),
-                _ => true,
-            })
     })
 }
 
@@ -826,7 +959,7 @@ fn compile_parameters(ast: &ProgramAst) -> Result<Vec<ParameterSpec>, CompileErr
 }
 
 fn validate_function_signature(function: &Function) -> Result<(), CompileError> {
-    let expected: &[&str] = if matches!(function.name.as_str(), "note" | "filter") {
+    let expected: &[&str] = if matches!(function.name.as_str(), "note" | "effect") {
         &["in", "p"]
     } else {
         &["in"]
@@ -841,7 +974,7 @@ fn validate_function_signature(function: &Function) -> Result<(), CompileError> 
     } else {
         Err(error_at(
             function.span,
-            if matches!(function.name.as_str(), "note" | "filter") {
+            if matches!(function.name.as_str(), "note" | "effect") {
                 format!(
                     "Entry Point '{}' の引数は (in, p) に固定されています",
                     function.name
@@ -868,7 +1001,7 @@ type DspLookup = HashMap<(EntryKind, usize, usize, usize, usize), usize>;
 fn collect_storage(
     ast: &ProgramAst,
     function_indices: &HashMap<String, usize>,
-    note_index: usize,
+    note_index: Option<usize>,
     filter_index: Option<usize>,
 ) -> Result<(Vec<StorageSpec>, StorageLookup, DspLookup), CompileError> {
     let mut schema = Vec::new();
@@ -914,12 +1047,34 @@ fn collect_storage(
                 }
                 Statement::Assignment { .. } => continue,
             };
+            if domain_text == "note" {
+                return Err(error_at(
+                    span,
+                    "note storageは廃止されました。noteではvoice、effectではglobalを使用してください",
+                ));
+            }
             let domain = StorageDomain::parse(domain_text).ok_or_else(|| {
                 error_at(
                     span,
-                    format!("不明なstorage domain '{domain_text}' です（voice / note / global）"),
+                    format!("不明なstorage domain '{domain_text}' です（voice / global）"),
                 )
             })?;
+            match (function.name.as_str(), domain) {
+                ("note", StorageDomain::Voice) | ("effect", StorageDomain::Global) => {}
+                ("note", _) => {
+                    return Err(error_at(
+                        span,
+                        "note entrypointではvoice storageのみ宣言できます",
+                    ));
+                }
+                ("effect", _) => {
+                    return Err(error_at(
+                        span,
+                        "effect entrypointではglobal storageのみ宣言できます",
+                    ));
+                }
+                _ => {}
+            }
             if name.starts_with("in.") || name.starts_with("out.") || name.starts_with("p.") {
                 return Err(error_at(span, "storage名に予約prefixは使用できません"));
             }
@@ -943,16 +1098,18 @@ fn collect_storage(
 
     let mut dsp_indices = HashMap::new();
     let mut visited = HashSet::new();
-    collect_function_dsp(
-        ast,
-        function_indices,
-        note_index,
-        EntryKind::Note,
-        StorageDomain::Voice,
-        &mut visited,
-        &mut schema,
-        &mut dsp_indices,
-    );
+    if let Some(note_index) = note_index {
+        collect_function_dsp(
+            ast,
+            function_indices,
+            note_index,
+            EntryKind::Note,
+            StorageDomain::Voice,
+            &mut visited,
+            &mut schema,
+            &mut dsp_indices,
+        );
+    }
     if let Some(filter_index) = filter_index {
         collect_function_dsp(
             ast,
@@ -1114,6 +1271,8 @@ struct Lowerer<'a> {
     dsp_indices: &'a DspLookup,
     schema: &'a [StorageSpec],
     entry_kind: EntryKind,
+    input_layout: ChannelLayout,
+    output_layout: ChannelLayout,
     assignments: Vec<Assignment>,
     next_slot: usize,
     call_stack: Vec<usize>,
@@ -1130,6 +1289,8 @@ impl<'a> Lowerer<'a> {
         dsp_indices: &'a DspLookup,
         schema: &'a [StorageSpec],
         entry_kind: EntryKind,
+        input_layout: ChannelLayout,
+        output_layout: ChannelLayout,
     ) -> Self {
         Self {
             ast,
@@ -1140,6 +1301,8 @@ impl<'a> Lowerer<'a> {
             dsp_indices,
             schema,
             entry_kind,
+            input_layout,
+            output_layout,
             assignments: Vec::new(),
             next_slot: 0,
             call_stack: Vec::new(),
@@ -1147,12 +1310,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_entry(&mut self, function_index: usize) -> Result<EntryPlan, CompileError> {
-        let outputs =
-            self.lower_function(function_index, entry_input_map(self.entry_kind), true, true)?;
+        let outputs = self.lower_function(
+            function_index,
+            entry_input_map(self.entry_kind, self.input_layout),
+            true,
+            true,
+        )?;
         let span = self.ast.functions[function_index].span;
         let outputs = match self.entry_kind {
-            EntryKind::Note => validate_note_outputs(outputs, span)?,
-            EntryKind::Filter => validate_filter_outputs(outputs, span)?,
+            EntryKind::Note => validate_note_outputs(outputs, span, self.output_layout)?,
+            EntryKind::Filter => validate_filter_outputs(outputs, span, self.output_layout)?,
         };
         Ok(EntryPlan {
             assignments: std::mem::take(&mut self.assignments),
@@ -1679,15 +1846,18 @@ impl<'a> Lowerer<'a> {
             .ok_or_else(|| error_at(span, "標準DSPのpersistent stateを解決できませんでした"))
     }
     fn ensure_storage_domain(&self, index: usize, span: Span) -> Result<(), CompileError> {
-        if self.entry_kind == EntryKind::Filter
-            && self.schema[index].domain != StorageDomain::Global
-        {
-            Err(error_at(
+        match (self.entry_kind, self.schema[index].domain) {
+            (EntryKind::Note, StorageDomain::Voice) => Ok(()),
+            (EntryKind::Note, StorageDomain::Global) => Err(error_at(
                 span,
-                "filter call treeからvoice/note storageへアクセスできません",
-            ))
-        } else {
-            Ok(())
+                "note call treeからvoice以外のstorageへアクセスできません",
+            )
+            .with_hint("noteではvoice storageのみ使用できます。global storageはfn effect(in, p) -> out 内で使用してください")),
+            (EntryKind::Filter, StorageDomain::Global) => Ok(()),
+            (EntryKind::Filter, StorageDomain::Voice) => Err(error_at(
+                span,
+                "effect call treeからvoice storageへアクセスできません",
+            )),
         }
     }
     fn allocate_slot(&mut self) -> usize {
@@ -1697,7 +1867,7 @@ impl<'a> Lowerer<'a> {
     }
 }
 
-fn entry_input_map(kind: EntryKind) -> HashMap<String, ValueRef> {
+fn entry_input_map(kind: EntryKind, mode: NoteOutputMode) -> HashMap<String, ValueRef> {
     let common = [
         ("sr", InputId::Sr),
         ("tempo", InputId::Tempo),
@@ -1731,7 +1901,10 @@ fn entry_input_map(kind: EntryKind) -> HashMap<String, ValueRef> {
             ("voice", InputId::Voice),
             ("rand", InputId::Rand),
         ],
-        EntryKind::Filter => &[("wave_l", InputId::WaveL), ("wave_r", InputId::WaveR)],
+        EntryKind::Filter => match mode {
+            NoteOutputMode::Mono => &[("wave", InputId::Wave)],
+            NoteOutputMode::Stereo => &[("wave_l", InputId::WaveL), ("wave_r", InputId::WaveR)],
+        },
     };
     result.extend(
         specific
@@ -1744,38 +1917,44 @@ fn entry_input_map(kind: EntryKind) -> HashMap<String, ValueRef> {
 fn validate_note_outputs(
     mut outputs: HashMap<String, usize>,
     span: Span,
+    mode: NoteOutputMode,
 ) -> Result<EntryOutputs, CompileError> {
     let l_limit = outputs.remove("l_limit").ok_or_else(|| {
         error_at(span, "noteは out.l_limit を必ず定義してください")
             .with_hint("Voiceを安全に終了するためrelease後の保持秒数が必要です")
     })?;
     let wave = outputs.remove("wave");
+    let pan = (mode == ChannelLayout::Mono)
+        .then(|| outputs.remove("pan"))
+        .flatten();
     let wave_l = outputs.remove("wave_l");
     let wave_r = outputs.remove("wave_r");
-    let pan = outputs.remove("pan");
-    if !outputs.is_empty() {
-        return Err(error_at(
+    match mode {
+        NoteOutputMode::Mono
+            if wave.is_some() && wave_l.is_none() && wave_r.is_none() && outputs.is_empty() =>
+        {
+            Ok(EntryOutputs::NoteMono {
+                wave: wave.unwrap(),
+                pan,
+                l_limit,
+            })
+        }
+        NoteOutputMode::Stereo
+            if wave.is_none() && wave_l.is_some() && wave_r.is_some() && outputs.is_empty() =>
+        {
+            Ok(EntryOutputs::NoteStereo {
+                wave_l: wave_l.unwrap(),
+                wave_r: wave_r.unwrap(),
+                l_limit,
+            })
+        }
+        NoteOutputMode::Mono => Err(error_at(
             span,
-            format!(
-                "noteに未対応のoutput fieldがあります: {}",
-                outputs.keys().cloned().collect::<Vec<_>>().join(", ")
-            ),
-        ));
-    }
-    match (wave, wave_l, wave_r) {
-        (Some(wave), None, None) => Ok(EntryOutputs::NoteMono { wave, pan, l_limit }),
-        (None, Some(wave_l), Some(wave_r)) if pan.is_none() => Ok(EntryOutputs::NoteStereo {
-            wave_l,
-            wave_r,
-            l_limit,
-        }),
-        (None, Some(_), Some(_)) => Err(error_at(
-            span,
-            "true stereo noteでは out.pan を定義できません",
+            "note.out.layout = mono のnoteは out.wave、任意のout.pan、out.l_limit だけを定義してください",
         )),
-        _ => Err(error_at(
+        NoteOutputMode::Stereo => Err(error_at(
             span,
-            "noteはout.wave、またはout.wave_l/out.wave_rのどちらか一方を完全に定義してください",
+            "note.out.layout = stereo のnoteは out.wave_l、out.wave_r、out.l_limit をすべて定義してください（out.wave / out.pan は使用できません）",
         )),
     }
 }
@@ -1783,19 +1962,36 @@ fn validate_note_outputs(
 fn validate_filter_outputs(
     mut outputs: HashMap<String, usize>,
     span: Span,
+    mode: NoteOutputMode,
 ) -> Result<EntryOutputs, CompileError> {
+    let wave = outputs.remove("wave");
     let wave_l = outputs.remove("wave_l");
     let wave_r = outputs.remove("wave_r");
-    if !outputs.is_empty() || wave_l.is_none() || wave_r.is_none() {
-        return Err(error_at(
+    match mode {
+        NoteOutputMode::Mono
+            if wave.is_some() && wave_l.is_none() && wave_r.is_none() && outputs.is_empty() =>
+        {
+            Ok(EntryOutputs::FilterMono {
+                wave: wave.unwrap(),
+            })
+        }
+        NoteOutputMode::Stereo
+            if wave.is_none() && wave_l.is_some() && wave_r.is_some() && outputs.is_empty() =>
+        {
+            Ok(EntryOutputs::FilterStereo {
+                wave_l: wave_l.unwrap(),
+                wave_r: wave_r.unwrap(),
+            })
+        }
+        NoteOutputMode::Mono => Err(error_at(
             span,
-            "filterは out.wave_l と out.wave_r だけを両方定義してください",
-        ));
+            "effect.out.layout = mono のeffectは out.wave だけを定義してください",
+        )),
+        NoteOutputMode::Stereo => Err(error_at(
+            span,
+            "effect.out.layout = stereo のeffectは out.wave_l と out.wave_r を両方定義してください",
+        )),
     }
-    Ok(EntryOutputs::Filter {
-        wave_l: wave_l.unwrap(),
-        wave_r: wave_r.unwrap(),
-    })
 }
 
 fn builtin_operation(name: &str, arity: usize) -> Option<Op> {
@@ -2042,10 +2238,31 @@ fn error_at(span: Span, message: impl Into<String>) -> CompileError {
 mod tests {
     use super::*;
 
+    fn compile(source: &str) -> Result<Program, CompileError> {
+        let note_layout = if source.contains("out.wave_l") || source.contains("out.wave_r") {
+            "stereo"
+        } else {
+            "mono"
+        };
+        let effect_layout = if source.contains("in.wave_l") || source.contains("in.wave_r") {
+            "stereo"
+        } else {
+            "mono"
+        };
+        let effect = if source.contains("fn effect") {
+            format!("effect.in.layout = {effect_layout}\neffect.out.layout = {effect_layout}\n")
+        } else {
+            String::new()
+        };
+        Compiler::new().compile(&format!(
+            "note.out.layout = {note_layout}\n{effect}{source}"
+        ))
+    }
+
     #[test]
     fn compiles_v2_parameter_and_mono_entry() {
         let source = "p.gain = param(0.5, 0, 2, 0.01, 7)\nfn note(in, p) -> out {\nout.wave = p.gain\nout.l_limit = 100ms\n}";
-        let program = Compiler::new().compile(source).unwrap();
+        let program = compile(source).unwrap();
         assert_eq!(program.note_output_mode(), NoteOutputMode::Mono);
         assert_eq!(program.parameter_specs()[0].cc_link, Some(7));
         let mut input = Inputs {
@@ -2057,9 +2274,84 @@ mod tests {
     }
 
     #[test]
+    fn convenience_evaluation_uses_one_sample_rate_for_input_and_state() {
+        let program =
+            compile("fn note(in, p) -> out {\nout.wave = in.sr\nout.l_limit = 1\n}").unwrap();
+        let input = Inputs {
+            sr: 44_100.0,
+            ..Inputs::default()
+        };
+        let mut scratch = program.evaluation_scratch();
+
+        let output = program.evaluate_with(&input, &mut scratch);
+
+        assert_eq!(output.wave, 44_100.0);
+        assert_eq!(scratch.instance.as_ref().unwrap().sample_rate(), 44_100.0);
+    }
+
+    #[test]
+    fn convenience_evaluation_falls_back_to_the_default_sample_rate() {
+        let program =
+            compile("fn note(in, p) -> out {\nout.wave = in.sr\nout.l_limit = 1\n}").unwrap();
+
+        assert_eq!(
+            program.evaluate(&Inputs::default()).wave,
+            DEFAULT_SAMPLE_RATE
+        );
+    }
+
+    #[test]
+    fn note_entry_rejects_non_voice_storage() {
+        let source = "fn note(in, p) -> out {\nf32 global count = 0\ncount = count + 1\nout.wave = count\nout.l_limit = 1\n}";
+
+        let error = compile(source).unwrap_err();
+
+        assert!(error.message.contains("note entrypointではvoice storage"));
+    }
+
+    #[test]
+    fn note_storage_domain_is_rejected() {
+        let source =
+            "fn note(in, p) -> out {\nf32 note count = 0\nout.wave = 0\nout.l_limit = 1\n}";
+
+        let error = compile(source).unwrap_err();
+
+        assert!(error.message.contains("note storageは廃止"));
+    }
+
+    #[test]
+    fn effect_entry_accepts_global_storage() {
+        let source = "fn note(in, p) -> out {\nout.wave = in.s\nout.l_limit = 1\n}\nfn effect(in, p) -> out {\nf32 global count = 0\ncount = count + 1\nout.wave = in.wave + count\n}";
+
+        assert!(compile(source).is_ok());
+    }
+
+    #[test]
+    fn effect_entry_accepts_independent_layouts() {
+        let source = "note.out.layout = mono\neffect.in.layout = stereo\neffect.out.layout = mono\nfn note(in, p) -> out {\nout.wave = 0\nout.l_limit = 1\n}\nfn effect(in, p) -> out {\nf32 global count = 0\ncount = count + 1\nout.wave = (in.wave_l + in.wave_r) * 0.5 + count\n}";
+        let program = Compiler::new().compile(source).unwrap();
+        assert_eq!(program.note_output_layout(), ChannelLayout::Mono);
+        assert_eq!(program.effect_input_layout(), ChannelLayout::Stereo);
+        assert_eq!(program.effect_output_layout(), ChannelLayout::Mono);
+    }
+
+    #[test]
+    fn effect_entry_rejects_voice_storage() {
+        let source = "fn note(in, p) -> out {\nout.wave = in.s\nout.l_limit = 1\n}\nfn effect(in, p) -> out {\nf32 voice count = 0\nout.wave = in.wave\n}";
+
+        let error = compile(source).unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("effect entrypointではglobal storage")
+        );
+    }
+
+    #[test]
     fn state_and_ring_are_continuous() {
         let source = "fn note(in, p) -> out {\nf32 voice counter = 0\nRingBuf<f32, 2> voice delay\nold = delay\ndelay = counter\ncounter = counter + 1\nout.wave = old\nout.l_limit = 1\n}";
-        let program = Compiler::new().compile(source).unwrap();
+        let program = compile(source).unwrap();
         let mut instance = program.instantiate(48_000.0, None).unwrap();
         let input = Inputs {
             sr: 48_000.0,
@@ -2067,15 +2359,59 @@ mod tests {
         };
         let mut values = Vec::new();
         for _ in 0..4 {
-            values.push(instance.evaluate_note(&input, 0, 0).wave);
+            values.push(instance.evaluate_note(&input, 0).wave);
             instance.commit_voice(0);
         }
         assert_eq!(values, vec![0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]
+    fn note_block_matches_scalar_state_progression() {
+        let source = "fn note(in, p) -> out {\nf32 voice count = 0\ncount = count + 1\nout.wave = count\nout.l_limit = 1\n}";
+        let program = compile(source).unwrap();
+        let input = Inputs::default();
+        let mut scalar = program.instantiate(48_000.0, None).unwrap();
+        let mut expected = [Outputs::default(); 3];
+        for output in &mut expected {
+            *output = scalar.evaluate_note(&input, 0);
+            scalar.commit_voice(0);
+        }
+        let mut block = program.instantiate(48_000.0, None).unwrap();
+        let mut actual = [Outputs::default(); 3];
+        block.evaluate_note_block(&[input; 3], &mut actual, 0);
+
+        assert_eq!(
+            actual.map(|output| output.wave),
+            expected.map(|output| output.wave)
+        );
+    }
+
+    #[test]
     fn rejects_legacy_source() {
         assert!(Compiler::new().compile("wave = 0\nl_limit = 1").is_err());
+    }
+
+    #[test]
+    fn requires_an_explicit_output_mode() {
+        let error = Compiler::new()
+            .compile("fn note(in, p) -> out {\nout.wave = 0\nout.l_limit = 1\n}")
+            .unwrap_err();
+        assert!(error.message.contains("note.out.layout"));
+    }
+
+    #[test]
+    fn output_fields_must_match_the_declared_mode() {
+        let stereo_pan = Compiler::new()
+            .compile(
+                "note.out.layout = stereo\nfn note(in, p) -> out {\nout.wave_l = 0\nout.wave_r = 0\nout.pan = 0\nout.l_limit = 1\n}",
+            )
+            .unwrap_err();
+        assert!(stereo_pan.message.contains("out.pan"));
+
+        let stereo_wave = Compiler::new()
+            .compile("note.out.layout = stereo\nfn note(in, p) -> out {\nout.wave = 0\nout.l_limit = 1\n}")
+            .unwrap_err();
+        assert!(stereo_wave.message.contains("out.wave_l"));
     }
 
     #[test]
@@ -2095,7 +2431,7 @@ fn note(in, p) -> out {
     out.l_limit = 1
 }
 "#;
-        let program = Compiler::new().compile(source).unwrap();
+        let program = compile(source).unwrap();
         let output = program.evaluate(&Inputs {
             sr: 48_000.0,
             ..Inputs::default()
@@ -2118,7 +2454,7 @@ fn note(in, p) -> out {
     out.l_limit = 1
 }
 "#;
-        let program = Compiler::new().compile(source).unwrap();
+        let program = compile(source).unwrap();
         let mut instance = program.instantiate(1_000.0, None).unwrap();
         let mut input = Inputs {
             sr: 1_000.0,
@@ -2127,7 +2463,7 @@ fn note(in, p) -> out {
         let mut values = Vec::new();
         for sample in 0..4 {
             input.t = sample as f32 / input.sr;
-            values.push(instance.evaluate_note(&input, 0, 0).wave);
+            values.push(instance.evaluate_note(&input, 0).wave);
             instance.commit_voice(0);
         }
         assert_eq!(values, vec![0.0, 0.0, 0.0, 1.0]);
@@ -2141,7 +2477,7 @@ fn note(in, p) -> out {
     out.wave_r = 0
     out.l_limit = 1
 }
-fn filter(in, p) -> out {
+fn effect(in, p) -> out {
     a1 = filter.onepole.lp(in.wave_l, 1000, in.sr)
     a2 = filter.onepole.hp(a1, 120, in.sr)
     a3 = filter.svf.lp(a2, 1500, 0.8, in.sr)
@@ -2193,7 +2529,7 @@ fn filter(in, p) -> out {
     out.wave_r = r3
 }
 "#;
-        let program = Compiler::new().compile(source).unwrap();
+        let program = compile(source).unwrap();
         let mut instance = program.instantiate(48_000.0, None).unwrap();
         let output = instance.evaluate_filter(&Inputs {
             wave_l: 0.25,

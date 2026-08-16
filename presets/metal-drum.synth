@@ -4,7 +4,8 @@ p.decay_s = param(0.9, 0.03, 6, 0.01)
 p.release_s = param(0.5, 0.01, 4, 0.01)
 p.metal = param(0.82, 0, 1, 0.01, 74)
 p.drive = param(1.3, 0.5, 6, 0.01)
-p.pan = param(0, -1, 1, 0.01)
+
+note.out.layout = mono
 
 fn note(in, p) -> out {
     hit = exciter.noise(in.t, 4ms)
@@ -15,6 +16,6 @@ fn note(in, p) -> out {
     release = exp(-9 * in.l / p.release_s)
     tone = drive(a + p.metal * (b + c + d), p.drive)
     out.wave = p.gain * in.s * in.vol * in.mexpr * release * tone
-    out.pan = clamp(in.midi_pan + p.pan, -1, 1)
+    out.pan = in.midi_pan
     out.l_limit = p.release_s
 }

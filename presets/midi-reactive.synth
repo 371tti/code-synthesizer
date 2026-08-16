@@ -1,6 +1,8 @@
 p.cc74_depth = param(7, 0, 16, 0.1, 74)
 p.fm = param(1, 0, 4, 0.01)
 p.release_s = param(2, 0.2, 12, 0.1)
+note.out.layout = mono
+
 fn note(in, p) -> out {
     brightness = 1 + p.cc74_depth * in.cc(74)
     fm = brightness * p.fm * in.mw * sin(TAU * in.freq * 2 * in.t)

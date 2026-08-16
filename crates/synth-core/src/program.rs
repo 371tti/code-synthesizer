@@ -1,5 +1,6 @@
 //! Compiled program ownership, migration, and lock-free hot reload exchange.
 
+use crate::worker::MAX_WORKERS;
 use crossbeam_queue::ArrayQueue;
 use std::{
     hint::spin_loop,
@@ -12,6 +13,7 @@ use synth_dsl::{Program, ProgramInstance, StateMigrationHandle};
 /// Craneliftでネイティブコード化されたプログラムです。
 pub(crate) struct RuntimeProgram {
     pub(crate) instance: Box<ProgramInstance>,
+    worker_instances: [Option<Box<ProgramInstance>>; MAX_WORKERS],
 }
 
 impl RuntimeProgram {
@@ -22,9 +24,32 @@ impl RuntimeProgram {
         Self::from_instance(instance)
     }
     fn from_instance(instance: ProgramInstance) -> Self {
+        let program = instance.program().clone();
+        let sample_rate = instance.sample_rate();
+        let migration = instance.migration_handle();
+        let mut worker_instances = std::array::from_fn(|_| None);
+        for worker in &mut worker_instances {
+            *worker = Some(Box::new(
+                program
+                    .instantiate_worker(sample_rate, Some(&migration))
+                    .expect("compiled worker state must prepare"),
+            ));
+        }
         Self {
             instance: Box::new(instance),
+            worker_instances,
         }
+    }
+
+    pub(crate) fn take_worker_instance(&mut self, index: usize) -> Box<ProgramInstance> {
+        self.worker_instances[index]
+            .take()
+            .expect("worker runtime must be prepared off the audio thread")
+    }
+
+    pub(crate) fn restore_worker_instance(&mut self, index: usize, instance: Box<ProgramInstance>) {
+        debug_assert!(self.worker_instances[index].is_none());
+        self.worker_instances[index] = Some(instance);
     }
 }
 

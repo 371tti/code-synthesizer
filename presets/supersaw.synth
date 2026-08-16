@@ -12,6 +12,8 @@ p.sub_mix = param(0.12, 0, 0.7, 0.01)
 p.air_mix = param(0.05, 0, 0.4, 0.01)
 p.drive = param(1.25, 0.5, 4, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     decay = p.sustain + (1 - p.sustain) * exp(-5 * in.t / p.decay_s)

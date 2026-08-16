@@ -11,6 +11,8 @@ p.width = param(1.22, 0, 1.6, 0.01)
 p.brightness = param(0.48, 0, 1, 0.01, 74)
 p.reverb_mix = param(0.22, 0, 0.8, 0.01)
 
+note.out.layout = stereo
+
 fn note(in, p) -> out {
     attack = min(in.t / p.attack_s, 1)
     decay = p.sustain + (1 - p.sustain) * exp(-4 * in.t / p.decay_s)
@@ -26,7 +28,10 @@ fn note(in, p) -> out {
     out.l_limit = p.release_s
 }
 
-fn filter(in, p) -> out {
+effect.in.layout = stereo
+effect.out.layout = stereo
+
+fn effect(in, p) -> out {
     wet_l = reverb.schroeder(in.wave_l, 0.58, 0.72, 0.38)
     wet_r = reverb.schroeder(in.wave_r, 0.64, 0.72, 0.38)
     wide = stereo.width(mix(in.wave_l, wet_l, p.reverb_mix),
