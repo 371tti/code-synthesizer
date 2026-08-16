@@ -6,456 +6,30 @@
 //! dropped, so swapping a program never allocates or deallocates in the audio
 //! callback.
 
-use crossbeam_queue::ArrayQueue;
-use std::hint::spin_loop;
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use synth_dsl::{
-    Inputs, MAX_USER_PARAMETERS, NoteOutputMode, ParameterSpec, Program, ProgramInstance,
-    StateMigrationHandle,
-};
+mod midi;
+mod program;
+mod shared;
+mod worker;
+
+use midi::{ChannelState, NoteDomain, Voice};
+pub use midi::{MidiEvent, MidiNote};
+pub use program::ProgramExchange;
+use program::RuntimeProgram;
+pub use shared::{KeyboardNoteState, UserParameterStore, WaveformMonitor};
+use std::sync::Arc;
+use synth_dsl::{Inputs, MAX_USER_PARAMETERS, NoteOutputMode, Program};
+use worker::{VoiceJob, VoiceWorkerPool, WORKER_THRESHOLD};
 
 pub const MAX_VOICES: usize = 64;
 pub const MIDI_CHANNELS: usize = 16;
 pub const MIDI_CC_COUNT: usize = 128;
 pub const WAVEFORM_CAPACITY: usize = 4_096;
-
-/// Lock-free normalized values shared by the host, WebView, and audio thread.
-pub struct UserParameterStore {
-    values: [AtomicU32; MAX_USER_PARAMETERS],
-    software_revisions: [AtomicU32; MAX_USER_PARAMETERS],
-}
-
-impl UserParameterStore {
-    pub fn new(specs: &[ParameterSpec]) -> Self {
-        Self {
-            values: std::array::from_fn(|index| {
-                AtomicU32::new(
-                    specs
-                        .get(index)
-                        .map_or(0.0, ParameterSpec::default_normalized)
-                        .to_bits(),
-                )
-            }),
-            software_revisions: std::array::from_fn(|_| AtomicU32::new(0)),
-        }
-    }
-
-    pub fn get_normalized(&self, index: usize) -> f32 {
-        self.values
-            .get(index)
-            .map_or(0.0, |value| f32::from_bits(value.load(Ordering::Relaxed)))
-            .clamp(0.0, 1.0)
-    }
-
-    pub fn set_normalized(&self, index: usize, value: f32) -> bool {
-        let Some(target) = self.values.get(index) else {
-            return false;
-        };
-        target.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-        self.software_revisions[index].fetch_add(1, Ordering::Release);
-        true
-    }
-
-    pub fn software_revisions(&self) -> [u32; MAX_USER_PARAMETERS] {
-        std::array::from_fn(|index| self.software_revisions[index].load(Ordering::Acquire))
-    }
-
-    pub fn set_from_midi(&self, index: usize, value: f32, block_start_revision: u32) -> bool {
-        let Some(target) = self.values.get(index) else {
-            return false;
-        };
-        if self.software_revisions[index].load(Ordering::Acquire) != block_start_revision {
-            return false;
-        }
-        target.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-        true
-    }
-
-    pub fn fill_inputs(&self, input: &mut Inputs) {
-        for (index, target) in input.params.iter_mut().enumerate() {
-            *target = self.get_normalized(index);
-        }
-    }
-
-    pub fn snapshot(&self) -> [f32; MAX_USER_PARAMETERS] {
-        std::array::from_fn(|index| self.get_normalized(index))
-    }
-}
-
-/// WebViewへ渡す鍵盤ごとの発音状態です。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KeyboardNoteState {
-    pub note: u8,
-    pub pressed_velocity: f32,
-    pub released_velocity: f32,
-}
-
-/// Single-writer, lock-free audio history used by the WebView oscilloscope.
-pub struct WaveformMonitor {
-    samples: [AtomicU32; WAVEFORM_CAPACITY],
-    write_index: AtomicUsize,
-    active_voices: AtomicUsize,
-    sample_rate: AtomicU32,
-    // 下位 8 bit は押下中、上位 8 bit は release envelope 中の最大 velocity。
-    keyboard_notes: [AtomicU16; 128],
-}
-
-impl WaveformMonitor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            samples: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
-            write_index: AtomicUsize::new(0),
-            active_voices: AtomicUsize::new(0),
-            sample_rate: AtomicU32::new(sanitize_sample_rate(sample_rate).to_bits()),
-            keyboard_notes: std::array::from_fn(|_| AtomicU16::new(0)),
-        }
-    }
-
-    pub fn set_sample_rate(&self, sample_rate: f32) {
-        self.sample_rate.store(
-            sanitize_sample_rate(sample_rate).to_bits(),
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn sample_rate(&self) -> f32 {
-        f32::from_bits(self.sample_rate.load(Ordering::Relaxed))
-    }
-
-    pub fn active_voice_count(&self) -> usize {
-        self.active_voices.load(Ordering::Relaxed)
-    }
-
-    pub fn read_recent(&self, length: usize) -> Vec<f32> {
-        let length = length.clamp(1, WAVEFORM_CAPACITY);
-        let end = self.write_index.load(Ordering::Acquire);
-        let start = end.saturating_sub(length);
-        (start..end)
-            .map(|index| {
-                let slot = index % WAVEFORM_CAPACITY;
-                f32::from_bits(self.samples[slot].load(Ordering::Relaxed))
-            })
-            .collect()
-    }
-
-    pub fn keyboard_note_states(&self) -> Vec<KeyboardNoteState> {
-        self.keyboard_notes
-            .iter()
-            .enumerate()
-            .filter_map(|(note, state)| {
-                let state = state.load(Ordering::Relaxed);
-                let pressed_velocity = (state & 0xff) as f32 / 127.0;
-                let released_velocity = (state >> 8) as f32 / 127.0;
-                (state != 0).then_some(KeyboardNoteState {
-                    note: note as u8,
-                    pressed_velocity,
-                    released_velocity,
-                })
-            })
-            .collect()
-    }
-
-    fn set_keyboard_note_state(
-        &self,
-        note: MidiNote,
-        pressed_velocity: f32,
-        released_velocity: f32,
-    ) {
-        let pressed = (pressed_velocity.clamp(0.0, 1.0) * 127.0).round() as u16;
-        let released = (released_velocity.clamp(0.0, 1.0) * 127.0).round() as u16;
-        self.keyboard_notes[note.number() as usize]
-            .store(pressed | released << 8, Ordering::Relaxed);
-    }
-
-    fn clear_keyboard_note_states(&self) {
-        for state in &self.keyboard_notes {
-            state.store(0, Ordering::Relaxed);
-        }
-    }
-
-    fn push(&self, sample: f32, active_voices: usize) {
-        let index = self.write_index.load(Ordering::Relaxed);
-        self.samples[index % WAVEFORM_CAPACITY]
-            .store(finite_or_zero(sample).to_bits(), Ordering::Relaxed);
-        self.active_voices.store(active_voices, Ordering::Relaxed);
-        self.write_index
-            .store(index.wrapping_add(1), Ordering::Release);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MidiNote(u8);
-
-impl MidiNote {
-    pub const fn new(note: u8) -> Self {
-        Self(if note > 127 { 127 } else { note })
-    }
-
-    pub const fn number(self) -> u8 {
-        self.0
-    }
-
-    pub fn frequency(self) -> f32 {
-        440.0 * 2.0f32.powf((self.0 as f32 - 69.0) / 12.0)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum MidiEvent {
-    NoteOn {
-        channel: u8,
-        note: MidiNote,
-        velocity: f32,
-    },
-    NoteOff {
-        channel: u8,
-        note: MidiNote,
-        velocity: f32,
-    },
-    PolyPressure {
-        channel: u8,
-        note: MidiNote,
-        value: f32,
-    },
-    ChannelPressure {
-        channel: u8,
-        value: f32,
-    },
-    PitchBend {
-        channel: u8,
-        value: f32,
-    },
-    ProgramChange {
-        channel: u8,
-        program: u8,
-    },
-    ControlChange {
-        channel: u8,
-        controller: u8,
-        value: f32,
-    },
-    AllNotesOff {
-        channel: u8,
-    },
-    AllSoundOff,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ChannelState {
-    bend: f32,
-    bend_range: f32,
-    modulation: f32,
-    volume: f32,
-    pan: f32,
-    expression: f32,
-    sustain: bool,
-    pressure: f32,
-    program: f32,
-    cc: [f32; MIDI_CC_COUNT],
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        let mut cc = [0.0; MIDI_CC_COUNT];
-        cc[7] = 1.0;
-        cc[10] = 0.5;
-        cc[11] = 1.0;
-        Self {
-            bend: 0.0,
-            bend_range: 2.0,
-            modulation: 0.0,
-            volume: 1.0,
-            pan: 0.0,
-            expression: 1.0,
-            sustain: false,
-            pressure: 0.0,
-            program: 0.0,
-            cc,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Voice {
-    active: bool,
-    key_down: bool,
-    released: bool,
-    channel: u8,
-    note: MidiNote,
-    velocity: f32,
-    poly_pressure: f32,
-    age: u64,
-    t: f32,
-    l: f32,
-    rng: u32,
-    note_slot: usize,
-}
-
-impl Default for Voice {
-    fn default() -> Self {
-        Self {
-            active: false,
-            key_down: false,
-            released: false,
-            channel: 0,
-            note: MidiNote::new(0),
-            velocity: 0.0,
-            poly_pressure: 0.0,
-            age: 0,
-            t: 0.0,
-            l: 0.0,
-            rng: 1,
-            note_slot: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct NoteDomain {
-    active: bool,
-    channel: u8,
-    note: MidiNote,
-    voices: u8,
-}
-
-impl Default for NoteDomain {
-    fn default() -> Self {
-        Self {
-            active: false,
-            channel: 0,
-            note: MidiNote::new(0),
-            voices: 0,
-        }
-    }
-}
-
-impl Voice {
-    fn begin_release(&mut self) {
-        if self.active && !self.released {
-            self.released = true;
-            self.l = 0.0;
-        }
-    }
-
-    fn next_random(&mut self) -> f32 {
-        let mut value = self.rng;
-        value ^= value << 13;
-        value ^= value >> 17;
-        value ^= value << 5;
-        self.rng = value.max(1);
-        (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0
-    }
-}
-
-/// Craneliftでネイティブコード化されたプログラムです。
-struct RuntimeProgram {
-    instance: Box<ProgramInstance>,
-}
-
-impl RuntimeProgram {
-    fn from_program(program: Program, sample_rate: f32) -> Self {
-        let instance = program
-            .instantiate(sample_rate, None)
-            .expect("compiled program state must prepare");
-        Self::from_instance(instance)
-    }
-    fn from_instance(instance: ProgramInstance) -> Self {
-        Self {
-            instance: Box::new(instance),
-        }
-    }
-}
-
-/// Bounded lock-free handoff for compiled programs.
-pub struct ProgramExchange {
-    pending: ArrayQueue<Box<RuntimeProgram>>,
-    retired: ArrayQueue<Box<RuntimeProgram>>,
-    migration: Mutex<Option<StateMigrationHandle>>,
-    sample_rate: AtomicU32,
-}
-
-impl ProgramExchange {
-    pub fn new(capacity: usize) -> Self {
-        let capacity = capacity.max(2);
-        Self {
-            pending: ArrayQueue::new(capacity),
-            retired: ArrayQueue::new(capacity),
-            migration: Mutex::new(None),
-            sample_rate: AtomicU32::new(48_000.0f32.to_bits()),
-        }
-    }
-
-    /// Publishes a program from a non-real-time thread. If the editor outpaces
-    /// the audio callback, stale unpublished programs are discarded here.
-    pub fn publish(&self, program: Program) {
-        let sample_rate = f32::from_bits(self.sample_rate.load(Ordering::Acquire));
-        let previous = self
-            .migration
-            .lock()
-            .expect("migration state poisoned")
-            .clone();
-        let instance = program
-            .instantiate(sample_rate, previous.as_ref())
-            .expect("compiled program state must prepare");
-        self.publish_instance(instance);
-    }
-
-    pub fn publish_instance(&self, instance: ProgramInstance) {
-        let handle = instance.migration_handle();
-        *self.migration.lock().expect("migration state poisoned") = Some(handle);
-        let mut program = Box::new(RuntimeProgram::from_instance(instance));
-        loop {
-            match self.pending.push(program) {
-                Ok(()) => return,
-                Err(returned) => {
-                    program = returned;
-                    if self.pending.pop().is_none() {
-                        spin_loop();
-                    }
-                }
-            }
-        }
-    }
-
-    fn seed(&self, instance: &ProgramInstance) {
-        self.sample_rate
-            .store(instance.sample_rate().to_bits(), Ordering::Release);
-        *self.migration.lock().expect("migration state poisoned") =
-            Some(instance.migration_handle());
-    }
-
-    /// Drains programs retired by the audio thread. Call this periodically on
-    /// the editor/background thread so deallocation never occurs in audio.
-    pub fn collect_retired(&self) -> usize {
-        let mut count = 0;
-        while self.retired.pop().is_some() {
-            count += 1;
-        }
-        count
-    }
-
-    fn swap_at_block_boundary(
-        &self,
-        current: &mut Box<RuntimeProgram>,
-        deferred_retire: &mut Option<Box<RuntimeProgram>>,
-    ) -> bool {
-        if let Some(retired) = deferred_retire.take()
-            && let Err(retired) = self.retired.push(retired)
-        {
-            *deferred_retire = Some(retired);
-            return false;
-        }
-        let Some(next) = self.pending.pop() else {
-            return false;
-        };
-        *deferred_retire = Some(std::mem::replace(current, next));
-        true
-    }
-}
+/// 1 sampleごとのqueue同期は直列JITより遅いため、block workerへ移行するまで無効です。
+pub const VOICE_WORKER_ENABLED: bool = false;
 
 pub struct SynthEngine {
     sample_rate: f32,
+    worker_pool: Option<VoiceWorkerPool>,
     program: Box<RuntimeProgram>,
     exchange: Option<Arc<ProgramExchange>>,
     deferred_retire: Option<Box<RuntimeProgram>>,
@@ -471,12 +45,13 @@ pub struct SynthEngine {
 
 impl SynthEngine {
     pub fn new(sample_rate: f32, program: Program) -> Self {
+        let sample_rate = sanitize_sample_rate(sample_rate);
+        let program = Box::new(RuntimeProgram::from_program(program, sample_rate));
+        let worker_pool = VoiceWorkerPool::new(&program.instance);
         Self {
-            sample_rate: sanitize_sample_rate(sample_rate),
-            program: Box::new(RuntimeProgram::from_program(
-                program,
-                sanitize_sample_rate(sample_rate),
-            )),
+            sample_rate,
+            worker_pool,
+            program,
             exchange: None,
             deferred_retire: None,
             voices: [Voice::default(); MAX_VOICES],
@@ -505,6 +80,9 @@ impl SynthEngine {
         self.sample_rate = sanitize_sample_rate(sample_rate);
         let program = self.program.instance.program().clone();
         *self.program = RuntimeProgram::from_program(program, self.sample_rate);
+        if let Some(pool) = &mut self.worker_pool {
+            pool.configure(&self.program.instance);
+        }
         if let Some(exchange) = &self.exchange {
             exchange.seed(&self.program.instance);
         }
@@ -532,6 +110,9 @@ impl SynthEngine {
     /// [`ProgramExchange`] so the old program is retired off the audio thread.
     pub fn set_program(&mut self, program: Program) {
         *self.program = RuntimeProgram::from_program(program, self.sample_rate);
+        if let Some(pool) = &mut self.worker_pool {
+            pool.configure(&self.program.instance);
+        }
         if let Some(exchange) = &self.exchange {
             exchange.seed(&self.program.instance);
         }
@@ -541,9 +122,13 @@ impl SynthEngine {
         if let Some(parameters) = &self.parameters {
             self.software_revisions_at_block_start = parameters.software_revisions();
         }
-        self.exchange.as_ref().is_some_and(|exchange| {
+        let swapped = self.exchange.as_ref().is_some_and(|exchange| {
             exchange.swap_at_block_boundary(&mut self.program, &mut self.deferred_retire)
-        })
+        });
+        if swapped && let Some(pool) = &mut self.worker_pool {
+            pool.configure(&self.program.instance);
+        }
+        swapped
     }
 
     pub fn note_on(&mut self, note: MidiNote, velocity: f32) {
@@ -773,6 +358,19 @@ impl SynthEngine {
         let mut retired_notes = [MidiNote::new(0); MAX_VOICES];
         let mut retired_count = 0;
         let output_mode = self.program.instance.program().note_output_mode();
+        let parallel = self
+            .worker_pool
+            .as_ref()
+            .is_some_and(VoiceWorkerPool::is_ready)
+            && self.program.instance.program().parallel_voice_safe()
+            && self.active_voice_count() >= WORKER_THRESHOLD;
+        let mut jobs = [VoiceJob {
+            input: Inputs::default(),
+            voice_slot: 0,
+            note_slot: 0,
+        }; MAX_VOICES];
+        let mut outputs = [synth_dsl::Outputs::default(); MAX_VOICES];
+        let mut job_count = 0;
         for voice_index in 0..MAX_VOICES {
             if !self.voices[voice_index].active {
                 continue;
@@ -799,11 +397,30 @@ impl SynthEngine {
             input.voice = voice_index as f32;
             input.rand = voice.next_random();
             input.cc = channel.cc;
-            let output = self
-                .program
-                .instance
-                .evaluate_note(&input, voice_index, note_slot);
-            self.program.instance.commit_voice(voice_index);
+            if parallel {
+                jobs[job_count] = VoiceJob {
+                    input,
+                    voice_slot: voice_index,
+                    note_slot,
+                };
+                job_count += 1;
+            } else {
+                outputs[voice_index] =
+                    self.program
+                        .instance
+                        .evaluate_note(&input, voice_index, note_slot);
+                self.program.instance.commit_voice(voice_index);
+            }
+        }
+        if parallel && let Some(pool) = &self.worker_pool {
+            pool.evaluate(&jobs[..job_count], &mut outputs);
+        }
+        for voice_index in 0..MAX_VOICES {
+            if !self.voices[voice_index].active {
+                continue;
+            }
+            let note_slot = self.voices[voice_index].note_slot;
+            let output = outputs[voice_index];
             match output_mode {
                 NoteOutputMode::Mono => {
                     let gain_l = ((1.0 - output.pan) * 0.5).sqrt();
@@ -829,9 +446,11 @@ impl SynthEngine {
                 self.release_note_domain(note_slot);
             }
         }
-        for note_slot in 0..MAX_VOICES {
-            if self.note_domains[note_slot].active {
-                self.program.instance.commit_note(note_slot);
+        if !parallel {
+            for note_slot in 0..MAX_VOICES {
+                if self.note_domains[note_slot].active {
+                    self.program.instance.commit_note(note_slot);
+                }
             }
         }
         let master = self.channels[0];
@@ -1107,5 +726,36 @@ mod tests {
         engine.begin_block();
         engine.control_change(0, 74, 1.0);
         assert_eq!(parameters.get_normalized(0), 1.0);
+    }
+
+    #[test]
+    fn worker_pool_renders_parallel_safe_polyphony() {
+        let source = "fn note(in, p) -> out {\nf32 global last = 0\nlast = in.voice\nf32 voice phase = 0\nphase = fract(phase + in.freq / in.sr)\nout.wave = sin(TAU * phase) * in.s\nout.l_limit = 1\n}";
+        let mut engine = SynthEngine::new(48_000.0, program(source));
+        for note in 48..56 {
+            engine.note_on(MidiNote::new(note), 0.7);
+        }
+        let mut left = [0.0; 512];
+        let mut right = [0.0; 512];
+        engine.render(&mut left, &mut right, Inputs::default());
+        assert_eq!(engine.active_voice_count(), 8);
+        assert!(left.iter().all(|sample| sample.is_finite()));
+        assert!(right.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn worker_pool_shards_global_ringbuf_in_note() {
+        let source = "fn note(in, p) -> out {\nRingBuf<f32, 20ms> global feedback\nold = feedback.peek_linear(4ms)\nfeedback = sin(TAU * in.freq * in.t) + old * 0.3\nout.wave = feedback * in.s\nout.l_limit = 1\n}";
+        let program = program(source);
+        assert!(program.parallel_voice_safe());
+        let mut engine = SynthEngine::new(48_000.0, program);
+        for note in 48..56 {
+            engine.note_on(MidiNote::new(note), 0.7);
+        }
+        let mut left = [0.0; 512];
+        let mut right = [0.0; 512];
+        engine.render(&mut left, &mut right, Inputs::default());
+        assert!(left.iter().all(|sample| sample.is_finite()));
+        assert!(right.iter().all(|sample| sample.is_finite()));
     }
 }

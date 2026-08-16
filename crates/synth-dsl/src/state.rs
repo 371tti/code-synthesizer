@@ -4,7 +4,13 @@
 //! fixed pointers and mutate the slot owned by the current audio callback.
 
 use crate::dsp::{DspKind, DspProcessor};
-use std::{cell::UnsafeCell, sync::Arc};
+use std::{
+    cell::UnsafeCell,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 pub const RUNTIME_STATE_SLOTS: usize = 64;
 
@@ -142,6 +148,10 @@ enum StateStorage {
         initial: f32,
         cells: Box<[UnsafeCell<f32>]>,
     },
+    GlobalScalar {
+        initial: f32,
+        value: AtomicU32,
+    },
     Ring {
         cells: Box<[UnsafeCell<RingState>]>,
     },
@@ -166,6 +176,13 @@ impl StateNode {
     fn new(spec: &StorageSpec, sample_rate: f32) -> Result<Self, String> {
         let count = spec.domain.cell_count();
         let (resolved, storage) = match spec.kind {
+            StorageKind::Scalar { initial } if spec.domain == StorageDomain::Global => (
+                ResolvedKind::Scalar,
+                StateStorage::GlobalScalar {
+                    initial,
+                    value: AtomicU32::new(initial.to_bits()),
+                },
+            ),
             StorageKind::Scalar { initial } => {
                 let cells = (0..count)
                     .map(|_| UnsafeCell::new(initial))
@@ -233,6 +250,9 @@ impl StateNode {
                 // SAFETY: audio owner has exclusive runtime access to the selected cell.
                 unsafe { *cells[slot].get() }
             }
+            StateStorage::GlobalScalar { value, .. } => {
+                f32::from_bits(value.load(Ordering::Relaxed))
+            }
             StateStorage::Ring { cells } => {
                 // SAFETY: audio owner has exclusive runtime access to the selected cell.
                 unsafe { (&mut *cells[slot].get()).read() }
@@ -248,6 +268,9 @@ impl StateNode {
             StateStorage::Scalar { cells, .. } => {
                 // SAFETY: audio owner has exclusive runtime access to the selected cell.
                 unsafe { *cells[slot].get() = value };
+            }
+            StateStorage::GlobalScalar { value: cell, .. } => {
+                cell.store(value.to_bits(), Ordering::Relaxed);
             }
             StateStorage::Ring { cells } => {
                 // SAFETY: audio owner has exclusive runtime access to the selected cell.
@@ -269,6 +292,9 @@ impl StateNode {
             StateStorage::Scalar { initial, cells } => {
                 // SAFETY: reset is performed by the single audio owner/setup thread.
                 unsafe { *cells[slot].get() = *initial };
+            }
+            StateStorage::GlobalScalar { initial, value } => {
+                value.store(initial.to_bits(), Ordering::Relaxed);
             }
             StateStorage::Ring { cells } => {
                 // SAFETY: reset is performed by the single audio owner/setup thread.
@@ -394,6 +420,23 @@ impl RuntimeState {
         sample_rate: f32,
         previous: Option<&StateMigrationHandle>,
     ) -> Result<Self, String> {
+        Self::prepare_with(specs, sample_rate, previous, false)
+    }
+
+    pub(crate) fn prepare_worker(
+        specs: Arc<[StorageSpec]>,
+        sample_rate: f32,
+        previous: Option<&StateMigrationHandle>,
+    ) -> Result<Self, String> {
+        Self::prepare_with(specs, sample_rate, previous, true)
+    }
+
+    fn prepare_with(
+        specs: Arc<[StorageSpec]>,
+        sample_rate: f32,
+        previous: Option<&StateMigrationHandle>,
+        shard_global_processors: bool,
+    ) -> Result<Self, String> {
         let sample_rate_bits = sample_rate.to_bits();
         let previous = previous.filter(|value| value.sample_rate_bits == sample_rate_bits);
         let mut nodes = Vec::new();
@@ -416,6 +459,9 @@ impl RuntimeState {
                         record.key == spec.key
                             && record.domain == spec.domain
                             && record.resolved == resolved
+                            && (!shard_global_processors
+                                || record.domain != StorageDomain::Global
+                                || matches!(record.resolved, ResolvedKind::Scalar))
                     })
                     .map(|record| record.node.clone())
             });

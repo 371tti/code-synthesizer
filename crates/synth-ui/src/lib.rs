@@ -13,7 +13,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
-use synth_core::{MidiEvent, MidiNote, ProgramExchange, UserParameterStore, WaveformMonitor};
+use synth_core::{
+    MidiEvent, MidiNote, ProgramExchange, UserParameterStore, VOICE_WORKER_ENABLED, WaveformMonitor,
+};
 use synth_dsl::{
     CompileError, Compiler, Inputs, NoteOutputMode, ParameterSpec, Program, ProgramInstance,
 };
@@ -207,18 +209,20 @@ pub struct CompileStatus {
     pub column: usize,
     pub hint: Option<String>,
     pub generation: u64,
+    pub parallel_voice_safe: bool,
 }
 
 impl CompileStatus {
-    fn success(generation: u64, warnings: &[String]) -> Self {
+    fn success(generation: u64, program: &Program) -> Self {
         Self {
             ok: true,
             message: "Compiled".into(),
-            warnings: warnings.to_vec(),
+            warnings: program.performance_warnings().to_vec(),
             line: 0,
             column: 0,
             hint: None,
             generation,
+            parallel_voice_safe: VOICE_WORKER_ENABLED && program.parallel_voice_safe(),
         }
     }
 
@@ -231,6 +235,7 @@ impl CompileStatus {
             column: error.column,
             hint: error.hint.clone(),
             generation,
+            parallel_voice_safe: false,
         }
     }
 }
@@ -413,14 +418,14 @@ impl UiModel {
         let source = source.into();
         let (source, program, status) = match Compiler::new().compile(&source) {
             Ok(program) => {
-                let status = CompileStatus::success(0, program.performance_warnings());
+                let status = CompileStatus::success(0, &program);
                 (source, program, status)
             }
             Err(_) => {
                 let program = Compiler::new()
                     .compile(DEFAULT_SOURCE)
                     .expect("default preset must compile");
-                let status = CompileStatus::success(0, program.performance_warnings());
+                let status = CompileStatus::success(0, &program);
                 (DEFAULT_SOURCE.to_owned(), program, status)
             }
         };
@@ -507,7 +512,7 @@ impl UiModel {
         state.selected_preset = "Custom".into();
         match result {
             Ok(program) => {
-                let status = CompileStatus::success(generation, program.performance_warnings());
+                let status = CompileStatus::success(generation, &program);
                 reconcile_parameters(
                     &self.parameters,
                     state.program.parameter_specs(),
@@ -545,6 +550,7 @@ impl UiModel {
                 column: 0,
                 hint: Some("Choose one of the presets shown in the preset list.".into()),
                 generation,
+                parallel_voice_safe: false,
             };
             return state.status.clone();
         };

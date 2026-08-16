@@ -527,11 +527,11 @@ function renderStatus(status) {
   const level = status.ok ? (warnings.length ? 'warning' : 'ok') : 'error';
   statusElement.className = `compile-status ${level}`;
   statusElement.textContent = status.ok
-    ? `● Compiled · Generation ${status.generation}${warnings.length ? ` · ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}`
+    ? `● Compiled · ${status.parallelVoiceSafe ? 'Parallel' : 'Serial'} · Generation ${status.generation}${warnings.length ? ` · ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}`
     : `● ${status.line}:${status.column} ${status.message}`;
   diagnostic.className = `editor-foot ${level}`;
   diagnosticMessage.textContent = status.ok
-    ? (warnings[0] ? `Warning · ${warnings[0]}` : 'Ready · audio program updated')
+    ? (warnings[0] ? `Warning · ${warnings[0]}` : (status.parallelVoiceSafe ? 'Ready · worker parallel evaluation enabled' : 'Ready · serial JIT evaluation'))
     : `${status.line}:${status.column} ${status.message}${status.hint ? ` — ${status.hint}` : ''}`;
   diagnosticMessage.title = status.ok ? warnings.join('\n') : (status.hint || '');
   const markerMessage = status.hint ? `${status.message}\nHint: ${status.hint}` : status.message;

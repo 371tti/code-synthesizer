@@ -337,6 +337,7 @@ pub struct Program {
     performance_warnings: Vec<String>,
     parameters: Vec<ParameterSpec>,
     note_output_mode: NoteOutputMode,
+    parallel_voice_safe: bool,
     jit: Arc<jit::JitProgram>,
 }
 
@@ -350,6 +351,20 @@ impl Program {
         Ok(ProgramInstance {
             program: self.clone(),
             state: RuntimeState::prepare(self.state_schema.clone(), sample_rate, previous)?,
+            sample_rate,
+        })
+    }
+    /// Worker用instanceです。Voice stateとGlobal scalarは共有し、Global
+    /// RingBuf/DSPはworkerごとのrelaxed shardとして準備されます。
+    pub fn instantiate_worker(
+        &self,
+        sample_rate: f32,
+        previous: Option<&StateMigrationHandle>,
+    ) -> Result<ProgramInstance, String> {
+        let sample_rate = sanitize_sample_rate(sample_rate)?;
+        Ok(ProgramInstance {
+            program: self.clone(),
+            state: RuntimeState::prepare_worker(self.state_schema.clone(), sample_rate, previous)?,
             sample_rate,
         })
     }
@@ -405,6 +420,12 @@ impl Program {
     }
     pub fn has_filter(&self) -> bool {
         self.has_filter
+    }
+    /// `note` がworkerから同時評価できるかを表します。Global Ring/DSPは
+    /// workerごとのrelaxed shardとして扱われ、同一noteで共有されるNote
+    /// stateだけが直列fallbackになります。
+    pub fn parallel_voice_safe(&self) -> bool {
+        self.parallel_voice_safe
     }
 }
 
@@ -641,6 +662,7 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
     })?;
     Ok(Program {
         has_filter: filter.is_some(),
+        parallel_voice_safe: note_parallel_safe(&note, &state_schema),
         state_schema,
         variable_count,
         operation_count,
@@ -648,6 +670,29 @@ fn compile_ast(ast: &ProgramAst) -> Result<Program, CompileError> {
         parameters,
         note_output_mode,
         jit: Arc::new(jit),
+    })
+}
+
+fn note_parallel_safe(note: &EntryPlan, schema: &[StorageSpec]) -> bool {
+    let permits = |index: usize| {
+        schema
+            .get(index)
+            .is_some_and(|storage| !matches!(storage.domain, StorageDomain::Note))
+    };
+    note.assignments.iter().all(|assignment| {
+        let target_safe = match assignment.target {
+            AssignmentTarget::Variable(_) => true,
+            AssignmentTarget::State(index) => permits(index),
+        };
+        target_safe
+            && assignment.code.iter().all(|operation| match operation {
+                Op::Push(ValueRef::State(index))
+                | Op::Dsp { index, .. }
+                | Op::RingPeek { index, .. }
+                | Op::RingLen { index }
+                | Op::RingDuration { index } => permits(*index),
+                _ => true,
+            })
     })
 }
 

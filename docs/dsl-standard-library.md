@@ -6,6 +6,12 @@
 
 state付きDSPを`fn note`のcall treeで使うとVoiceごとのstate、`fn filter`のcall treeで使うとPlugin全体のglobal stateになります。同じsource位置・種類・sample rateでhot reloadした場合はstateを引き継ぎます。
 
+## Worker Evaluation Compatibility
+
+runtimeはworker dispatchに適した`note` entryを解析します。`f32 global` はrelaxed Atomic storageで共有でき、同一sampleに複数Voiceが書き込んだ場合は実行順に依存するlast-writer-winsです。現在は速度を優先してsample単位workerを無効化しており、Compile statusには`Serial`と表示されます。
+
+`note`からGlobal RingBufまたはGlobal stateful DSPへ触れる場合、それらはworkerごとのrelaxed shardとして実行されます。worker間で同じfeedback stateは共有されません。`note` domainだけは同一ノートの複数Voiceで共有されるため、使用したProgramは直列評価対象になります。`filter`内のGlobal RingBuf/DSPは従来どおり単一の直列・transactional stateです。
+
 時間引数の単位は秒です。`10ms`、`250us`、`2s`のsuffixをそのまま使用できます。
 
 ## RingBuf
