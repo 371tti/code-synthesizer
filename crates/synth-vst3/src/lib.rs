@@ -8,15 +8,23 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::rc::Rc;
 use std::slice;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::collections::hash_map::DefaultHasher;
+#[cfg(target_os = "windows")]
+use std::hash::{Hash, Hasher};
+
 use synth_core::{MidiEvent, MidiNote, SynthEngine};
 use synth_dsl::{Inputs, MAX_USER_PARAMETERS};
 use synth_ui::{DEFAULT_SOURCE, UiModel};
-use vst3::{Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
+use vst3::{Class, ComPtr, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
 
 const PLUGIN_NAME: &str = "Code Synthesizer";
 const VENDOR: &str = "Code Synthesizer";
@@ -38,6 +46,88 @@ const MAX_STATE_LAYOUT: usize = 1024 * 1024;
 const EDITOR_WIDTH: i32 = 1050;
 const EDITOR_HEIGHT: i32 = 680;
 
+
+type ComponentHandlerSlot = Rc<RefCell<Option<ComPtr<IComponentHandler>>>>;
+
+const PARAMETER_RESTART_FLAGS: i32 = RestartFlags_::kParamTitlesChanged as i32
+    | RestartFlags_::kParamValuesChanged as i32;
+
+fn notify_parameter_schema_changed(handler_slot: &ComponentHandlerSlot) {
+    let handler = handler_slot.borrow();
+    let Some(handler) = handler.as_ref() else {
+        return;
+    };
+    unsafe {
+        let _ = handler.restartComponent(PARAMETER_RESTART_FLAGS);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn parameter_metadata_fingerprint(model: &UiModel) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for index in 0..MAX_USER_PARAMETERS {
+        index.hash(&mut hasher);
+        match model.user_parameter_spec(index) {
+            Some(spec) => {
+                1_u8.hash(&mut hasher);
+                spec.name.hash(&mut hasher);
+                spec.min.to_bits().hash(&mut hasher);
+                spec.max.to_bits().hash(&mut hasher);
+                spec.step.to_bits().hash(&mut hasher);
+                spec.default_normalized().to_bits().hash(&mut hasher);
+                spec.cc_link.hash(&mut hasher);
+            }
+            None => 0_u8.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
+}
+
+#[cfg(target_os = "windows")]
+struct ParameterMetadataTimerEntry {
+    model: Arc<UiModel>,
+    component_handler: ComponentHandlerSlot,
+    fingerprint: u64,
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static PARAMETER_METADATA_TIMERS: RefCell<HashMap<usize, ParameterMetadataTimerEntry>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" {
+    fn SetTimer(
+        h_wnd: *mut c_void,
+        id_event: usize,
+        elapse_ms: u32,
+        timer_proc: Option<unsafe extern "system" fn(*mut c_void, u32, usize, u32)>,
+    ) -> usize;
+    fn KillTimer(h_wnd: *mut c_void, id_event: usize) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn parameter_metadata_timer_proc(
+    _hwnd: *mut c_void,
+    _message: u32,
+    timer_id: usize,
+    _time: u32,
+) {
+    PARAMETER_METADATA_TIMERS.with(|timers| {
+        let mut timers = timers.borrow_mut();
+        let Some(entry) = timers.get_mut(&timer_id) else {
+            return;
+        };
+        let fingerprint = parameter_metadata_fingerprint(&entry.model);
+        if fingerprint == entry.fingerprint {
+            return;
+        }
+        entry.fingerprint = fingerprint;
+        notify_parameter_schema_changed(&entry.component_handler);
+    });
+}
+
 struct ProcessorState {
     engine: SynthEngine,
     transport: Inputs,
@@ -47,6 +137,7 @@ struct SynthPlugin {
     processor: RefCell<ProcessorState>,
     ui: Arc<UiModel>,
     master_gain: AtomicU64,
+    component_handler: ComponentHandlerSlot,
 }
 
 impl Class for SynthPlugin {
@@ -73,6 +164,7 @@ impl SynthPlugin {
             }),
             ui,
             master_gain: AtomicU64::new(DEFAULT_GAIN_NORMALIZED.to_bits()),
+            component_handler: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -237,19 +329,7 @@ impl SynthPlugin {
                 self.master_gain
                     .store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
             } else if let Some(index) = user_parameter_index(id) {
-                // Apply host automation into the shared UserParameterStore using
-                // `set_from_midi` so the value is only accepted when the
-                // audio thread's block-start revision matches. This prevents
-                // racing with UI-driven changes and keeps the audio-thread
-                // revision snapshot semantics consistent (used for MIDI CC
-                // linked parameters as well).
-                // Ask the engine to apply the host-driven parameter so it can
-                // enforce the block-start revision semantics without exposing its
-                // internals to this adapter.
-                if !engine.apply_host_user_parameter(index, value as f32) {
-                    // Fallback for early-initialization paths: update UI store.
-                    self.ui.set_user_parameter_normalized(index, value as f32);
-                }
+                self.ui.set_user_parameter_normalized(index, value as f32);
             } else if let Some((channel, controller)) = decode_midi_param(id) {
                 apply_midi_parameter(engine, channel, controller, value as f32);
             }
@@ -490,11 +570,19 @@ impl IProcessContextRequirementsTrait for SynthPlugin {
 
 impl IEditControllerTrait for SynthPlugin {
     unsafe fn setComponentState(&self, stream: *mut IBStream) -> tresult {
-        unsafe { <Self as IComponentTrait>::setState(self, stream) }
+        let result = unsafe { <Self as IComponentTrait>::setState(self, stream) };
+        if result == kResultOk || result == kResultTrue {
+            notify_parameter_schema_changed(&self.component_handler);
+        }
+        result
     }
 
     unsafe fn setState(&self, stream: *mut IBStream) -> tresult {
-        unsafe { <Self as IComponentTrait>::setState(self, stream) }
+        let result = unsafe { <Self as IComponentTrait>::setState(self, stream) };
+        if result == kResultOk || result == kResultTrue {
+            notify_parameter_schema_changed(&self.component_handler);
+        }
+        result
     }
 
     unsafe fn getState(&self, stream: *mut IBStream) -> tresult {
@@ -677,13 +765,6 @@ impl IEditControllerTrait for SynthPlugin {
         if id == MASTER_GAIN_ID {
             f64::from_bits(self.master_gain.load(Ordering::Relaxed))
         } else if let Some(index) = user_parameter_index(id) {
-            // Prefer the engine's runtime value when available (effector/audio-only
-            // usage). Fall back to the UI store otherwise.
-            if let Ok(processor) = self.processor.try_borrow() {
-                if let Some(v) = processor.engine.get_user_parameter_normalized(index) {
-                    return v as f64;
-                }
-            }
             self.ui.user_parameter_normalized(index) as f64
         } else if let Some((_channel, controller)) = decode_midi_param(id) {
             midi_parameter_default(controller)
@@ -699,19 +780,6 @@ impl IEditControllerTrait for SynthPlugin {
             return kResultOk;
         }
         if let Some(index) = user_parameter_index(id) {
-            // Try to write into the audio runtime immediately when available
-            // so controller-driven changes are reflected in the audio path.
-            if let Ok(mut processor) = self.processor.try_borrow_mut() {
-                if processor
-                    .engine
-                    .set_user_parameter_immediate(index, value as f32)
-                {
-                    // Keep UI store in sync as well.
-                    self.ui.set_user_parameter_normalized(index, value as f32);
-                    return kResultOk;
-                }
-            }
-            // Fallback to updating the UI-backed store.
             self.ui.set_user_parameter_normalized(index, value as f32);
             return kResultOk;
         }
@@ -726,7 +794,12 @@ impl IEditControllerTrait for SynthPlugin {
         }
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        let handler = unsafe { ComRef::from_raw(handler) }.map(|handler| handler.to_com_ptr());
+        *self.component_handler.borrow_mut() = handler;
+        if self.component_handler.borrow().is_some() {
+            notify_parameter_schema_changed(&self.component_handler);
+        }
         kResultOk
     }
 
@@ -735,7 +808,10 @@ impl IEditControllerTrait for SynthPlugin {
             return ptr::null_mut();
         }
         synth_ui::write_ui_diagnostic("VST3 createView(editor)");
-        ComWrapper::new(SynthView::new(self.ui.clone()))
+        ComWrapper::new(SynthView::new(
+            self.ui.clone(),
+            self.component_handler.clone(),
+        ))
             .to_com_ptr::<IPlugView>()
             .map_or(ptr::null_mut(), |view| view.into_raw())
     }
@@ -764,21 +840,82 @@ impl IMidiMappingTrait for SynthPlugin {
 
 struct SynthView {
     model: Arc<UiModel>,
+    component_handler: ComponentHandlerSlot,
     width: Cell<i32>,
     height: Cell<i32>,
     #[cfg(target_os = "windows")]
     host: RefCell<Option<synth_ui::WebViewHost>>,
+    #[cfg(target_os = "windows")]
+    parameter_metadata_timer: Cell<usize>,
 }
 
 impl SynthView {
-    fn new(model: Arc<UiModel>) -> Self {
+    fn new(model: Arc<UiModel>, component_handler: ComponentHandlerSlot) -> Self {
         Self {
             model,
+            component_handler,
             width: Cell::new(EDITOR_WIDTH),
             height: Cell::new(EDITOR_HEIGHT),
             #[cfg(target_os = "windows")]
             host: RefCell::new(None),
+            #[cfg(target_os = "windows")]
+            parameter_metadata_timer: Cell::new(0),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn start_parameter_metadata_timer(&self) {
+        if self.parameter_metadata_timer.get() != 0 {
+            return;
+        }
+
+        // A NULL HWND creates a thread timer. Because attached() runs on the host's
+        // UI thread, the callback is dispatched by that same UI message loop. This
+        // keeps IComponentHandler::restartComponent off the audio thread.
+        let timer_id = unsafe {
+            SetTimer(
+                ptr::null_mut(),
+                0,
+                80,
+                Some(parameter_metadata_timer_proc),
+            )
+        };
+        if timer_id == 0 {
+            return;
+        }
+
+        PARAMETER_METADATA_TIMERS.with(|timers| {
+            timers.borrow_mut().insert(
+                timer_id,
+                ParameterMetadataTimerEntry {
+                    model: self.model.clone(),
+                    component_handler: self.component_handler.clone(),
+                    fingerprint: parameter_metadata_fingerprint(&self.model),
+                },
+            );
+        });
+        self.parameter_metadata_timer.set(timer_id);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn stop_parameter_metadata_timer(&self) {
+        let timer_id = self.parameter_metadata_timer.replace(0);
+        if timer_id == 0 {
+            return;
+        }
+        unsafe {
+            let _ = KillTimer(ptr::null_mut(), timer_id);
+        }
+        PARAMETER_METADATA_TIMERS.with(|timers| {
+            timers.borrow_mut().remove(&timer_id);
+        });
+    }
+}
+
+impl Drop for SynthView {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        self.stop_parameter_metadata_timer();
     }
 }
 
@@ -826,6 +963,7 @@ impl IPlugViewTrait for SynthView {
             } {
                 Ok(host) => {
                     *self.host.borrow_mut() = Some(host);
+                    self.start_parameter_metadata_timer();
                     kResultOk
                 }
                 Err(_) => kResultFalse,
@@ -841,6 +979,7 @@ impl IPlugViewTrait for SynthView {
         synth_ui::write_ui_diagnostic("VST3 IPlugView::removed");
         #[cfg(target_os = "windows")]
         {
+            self.stop_parameter_metadata_timer();
             self.host.borrow_mut().take();
         }
         kResultOk
@@ -977,7 +1116,7 @@ impl IPluginFactory2Trait for Factory {
         copy_cstring("Audio Module Class", &mut info.category);
         copy_cstring(PLUGIN_NAME, &mut info.name);
         info.classFlags = 0;
-        copy_cstring("Fx|Instrument", &mut info.subCategories);
+        copy_cstring("Instrument|Synth", &mut info.subCategories);
         copy_cstring(VENDOR, &mut info.vendor);
         copy_cstring(VERSION, &mut info.version);
         copy_cstring("VST 3.8.0", &mut info.sdkVersion);
