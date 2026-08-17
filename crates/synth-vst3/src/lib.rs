@@ -1116,7 +1116,7 @@ impl IPluginFactory2Trait for Factory {
         copy_cstring("Audio Module Class", &mut info.category);
         copy_cstring(PLUGIN_NAME, &mut info.name);
         info.classFlags = 0;
-        copy_cstring("Instrument|Synth", &mut info.subCategories);
+        copy_cstring("Fx|Instrument|Synth", &mut info.subCategories);
         copy_cstring(VENDOR, &mut info.vendor);
         copy_cstring(VERSION, &mut info.version);
         copy_cstring("VST 3.8.0", &mut info.sdkVersion);
