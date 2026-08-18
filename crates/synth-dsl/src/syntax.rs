@@ -474,15 +474,17 @@ impl Parser {
         let mut effect_output_layout = None;
         let mut parameters = Vec::new();
         let mut functions: Vec<Function> = Vec::new();
-        let mut saw_function = false;
+
         self.skip_newlines();
+
         while !self.at_eof() {
             if self.at_ident("mode") {
                 return Err(self.error_here(
-                    "`mode mono/stereo` は廃止されました。note.out.layout = mono|stereo を指定してください",
-                ));
+                "`mode mono/stereo` は廃止されました。note.out.layout = mono|stereo を指定してください",
+            ));
             } else if self.at_ident("note") || self.at_ident("effect") {
                 let statement = self.parse_assignment()?;
+
                 let Statement::Assignment {
                     targets,
                     value,
@@ -491,6 +493,7 @@ impl Parser {
                 else {
                     unreachable!();
                 };
+
                 if targets.len() != 1 {
                     return Err(CompileError::new(
                         "layout宣言は1つのfieldへ代入してください",
@@ -498,6 +501,7 @@ impl Parser {
                         span.column,
                     ));
                 }
+
                 let Expr::Name(value, _) = value else {
                     return Err(CompileError::new(
                         "layoutには mono または stereo を指定してください",
@@ -505,6 +509,7 @@ impl Parser {
                         span.column,
                     ));
                 };
+
                 let layout = match value.as_str() {
                     "mono" => ChannelLayout::Mono,
                     "stereo" => ChannelLayout::Stereo,
@@ -516,19 +521,18 @@ impl Parser {
                         ));
                     }
                 };
+
                 let target = &targets[0];
+
                 let destination = match target.as_str() {
                     "note.out.layout"
-                        if !functions
-                            .iter()
-                            .any(|function| matches!(function.name.as_str(), "note")) =>
+                        if !functions.iter().any(|function| function.name == "note") =>
                     {
                         &mut note_output_layout
                     }
+
                     "effect.in.layout" | "effect.out.layout"
-                        if !functions
-                            .iter()
-                            .any(|function| matches!(function.name.as_str(), "effect")) =>
+                        if !functions.iter().any(|function| function.name == "effect") =>
                     {
                         if target == "effect.in.layout" {
                             &mut effect_input_layout
@@ -536,6 +540,7 @@ impl Parser {
                             &mut effect_output_layout
                         }
                     }
+
                     "note.out.layout" => {
                         return Err(CompileError::new(
                             "note.out.layout は fn note より前に置く必要があります",
@@ -543,6 +548,7 @@ impl Parser {
                             span.column,
                         ));
                     }
+
                     "effect.in.layout" | "effect.out.layout" => {
                         return Err(CompileError::new(
                             "effect layout は fn effect より前に置く必要があります",
@@ -550,6 +556,7 @@ impl Parser {
                             span.column,
                         ));
                     }
+
                     _ => {
                         return Err(CompileError::new(
                             "layout宣言は note.out.layout / effect.in.layout / effect.out.layout のいずれかです",
@@ -558,6 +565,7 @@ impl Parser {
                         ));
                     }
                 };
+
                 if destination.replace(layout).is_some() {
                     return Err(CompileError::new(
                         format!("{target} は1つだけ宣言できます"),
@@ -566,15 +574,11 @@ impl Parser {
                     ));
                 }
             } else if self.at_ident("fn") {
-                saw_function = true;
                 functions.push(self.parse_function()?);
             } else {
-                if saw_function {
-                    return Err(
-                        self.error_here("parameter宣言は最初のfnより前に置く必要があります")
-                    );
-                }
+                // p.* = param(...) はトップレベルなら位置を問わない。
                 let statement = self.parse_assignment()?;
+
                 let Statement::Assignment {
                     targets,
                     value,
@@ -583,6 +587,7 @@ impl Parser {
                 else {
                     unreachable!();
                 };
+
                 if targets.len() != 1 || !targets[0].starts_with("p.") {
                     return Err(CompileError::new(
                         "トップレベルには p.name = param(...) だけを宣言できます",
@@ -590,6 +595,7 @@ impl Parser {
                         span.column,
                     ));
                 }
+
                 let Expr::Call {
                     name, arguments, ..
                 } = value
@@ -600,6 +606,7 @@ impl Parser {
                         span.column,
                     ));
                 };
+
                 if name != "param" {
                     return Err(CompileError::new(
                         "parameter宣言の右辺には param(...) が必要です",
@@ -607,14 +614,17 @@ impl Parser {
                         span.column,
                     ));
                 }
+
                 parameters.push(ParameterDecl {
                     name: targets.into_iter().next().unwrap(),
                     arguments,
                     span,
                 });
             }
+
             self.skip_newlines();
         }
+
         let note_output_layout = if functions.iter().any(|f| f.name == "note") {
             note_output_layout.ok_or_else(|| {
                 CompileError::new(
@@ -627,6 +637,7 @@ impl Parser {
             // If there's no `fn note`, the note output layout is irrelevant; default to mono.
             note_output_layout.unwrap_or(ChannelLayout::Mono)
         };
+
         Ok(ProgramAst {
             note_output_layout,
             effect_input_layout,
