@@ -13,84 +13,90 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  release:
-    runs-on: windows-latest
+  plan:
+    name: Check release
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      should_release: ${{ steps.release.outputs.should_release }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
-      - name: Check release
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version
         id: version
-        shell: pwsh
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(
+            cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "synth-vst3") | .version'
+          )"
+
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "Could not determine synth-vst3 version"
+            exit 1
+          fi
+
+          tag="v$version"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          echo "Version: $version"
+          echo "Tag: $tag"
+
+      - name: Check GitHub Release
+        id: release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          function Get-CargoVersion([string]$Manifest) {
-            $workspace = [regex]::Match(
-              $Manifest,
-              '(?ms)^\[workspace\.package\]\s*(.*?)(?=^\[|\z)'
-            )
+          set -euo pipefail
 
-            if ($workspace.Success) {
-              $match = [regex]::Match(
-                $workspace.Groups[1].Value,
-                '(?m)^\s*version\s*=\s*"([^"]+)"'
-              )
+          tag="${{ steps.version.outputs.tag }}"
 
-              if ($match.Success) {
-                return $match.Groups[1].Value
-              }
-            }
+          if gh release view "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1
+          then
+            echo "Release $tag already exists -> skip"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $tag does not exist -> release"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-            $package = [regex]::Match(
-              $Manifest,
-              '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)'
-            )
+  release:
+    name: Build and release
+    needs: plan
 
-            if ($package.Success) {
-              $match = [regex]::Match(
-                $package.Groups[1].Value,
-                '(?m)^\s*version\s*=\s*"([^"]+)"'
-              )
+    if: needs.plan.outputs.should_release == 'true'
 
-              if ($match.Success) {
-                return $match.Groups[1].Value
-              }
-            }
+    runs-on: windows-latest
 
-            return $null
-          }
-
-          $version = Get-CargoVersion (
-            Get-Content -LiteralPath Cargo.toml -Raw
-          )
-
-          if (-not $version) {
-            throw 'Cargo.toml version was not found'
-          }
-
-          $tag = "v$version"
-
-          & gh release view $tag *> $null
-
-          if ($LASTEXITCODE -eq 0) {
-            $release = 'false'
-            Write-Host "Release $tag already exists."
-          }
-          else {
-            $release = 'true'
-            Write-Host "Release $tag does not exist. Creating release."
-          }
-
-          "changed=$release" >> $env:GITHUB_OUTPUT
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=$tag" >> $env:GITHUB_OUTPUT
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
 
       - name: Set up Node.js
-        if: steps.version.outputs.changed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -98,57 +104,104 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Set up Rust
-        if: steps.version.outputs.changed == 'true'
         shell: pwsh
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          rustup component add rustfmt clippy
+          rustup component add clippy
 
       - name: Install UI dependencies
-        if: steps.version.outputs.changed == 'true'
-        run: npm ci --prefix ui
+        shell: pwsh
+        run: |
+          npm ci --prefix ui
 
-      - name: Verify
-        if: steps.version.outputs.changed == 'true'
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Test
         shell: pwsh
         run: |
           cargo test --workspace
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Clippy
+        shell: pwsh
+        run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Build VST3 bundle
-        if: steps.version.outputs.changed == 'true'
         shell: pwsh
-        run: .\build.ps1
+        run: |
+          .\build.ps1
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Package release asset
-        if: steps.version.outputs.changed == 'true'
         id: package
         shell: pwsh
         run: |
-          $version = '${{ steps.version.outputs.version }}'
+          $version = '${{ needs.plan.outputs.version }}'
+
+          $bundle = 'target\bundled\Code Synthesizer.vst3'
           $asset = "target\bundled\code-synthesizer-v$version-windows-x64.zip"
-          Compress-Archive -LiteralPath 'target\bundled\Code Synthesizer.vst3' -DestinationPath $asset -Force
+
+          if (-not (Test-Path -LiteralPath $bundle)) {
+            throw "VST3 bundle not found: $bundle"
+          }
+
+          if (Test-Path -LiteralPath $asset) {
+            Remove-Item -LiteralPath $asset -Force
+          }
+
+          Compress-Archive `
+            -LiteralPath $bundle `
+            -DestinationPath $asset `
+            -Force
+
+          if (-not (Test-Path -LiteralPath $asset)) {
+            throw "Release archive was not created: $asset"
+          }
+
           "asset=$asset" >> $env:GITHUB_OUTPUT
 
+          Write-Host "Created $asset"
+
       - name: Create GitHub Release
-        if: steps.version.outputs.changed == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = '${{ steps.version.outputs.version }}'
-          $tag = '${{ steps.version.outputs.tag }}'
+          $version = '${{ needs.plan.outputs.version }}'
+          $tag = '${{ needs.plan.outputs.tag }}'
           $asset = '${{ steps.package.outputs.asset }}'
+
           $arguments = @(
+            'release',
+            'create',
             $tag,
             $asset,
+            '--repo', $env:GITHUB_REPOSITORY,
             '--target', $env:GITHUB_SHA,
             '--title', "Code Synthesizer v$version",
             '--generate-notes'
           )
-          if ($version.Contains('-')) { $arguments += '--prerelease' }
-          & gh release create @arguments
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ($version.Contains('-')) {
+            $arguments += '--prerelease'
+          }
+
+          & gh @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
