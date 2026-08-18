@@ -5,8 +5,6 @@ on:
     branches:
       - main
       - master
-    paths:
-      - Cargo.toml
 
 permissions:
   contents: write
@@ -24,41 +22,72 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect version change
+      - name: Check release
         id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           function Get-CargoVersion([string]$Manifest) {
-            $workspace = [regex]::Match($Manifest, '(?ms)^\[workspace\.package\]\s*(.*?)(?=^\[|\z)')
+            $workspace = [regex]::Match(
+              $Manifest,
+              '(?ms)^\[workspace\.package\]\s*(.*?)(?=^\[|\z)'
+            )
+
             if ($workspace.Success) {
-              $match = [regex]::Match($workspace.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
-              if ($match.Success) { return $match.Groups[1].Value }
+              $match = [regex]::Match(
+                $workspace.Groups[1].Value,
+                '(?m)^\s*version\s*=\s*"([^"]+)"'
+              )
+
+              if ($match.Success) {
+                return $match.Groups[1].Value
+              }
             }
-            $package = [regex]::Match($Manifest, '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)')
+
+            $package = [regex]::Match(
+              $Manifest,
+              '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)'
+            )
+
             if ($package.Success) {
-              $match = [regex]::Match($package.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
-              if ($match.Success) { return $match.Groups[1].Value }
+              $match = [regex]::Match(
+                $package.Groups[1].Value,
+                '(?m)^\s*version\s*=\s*"([^"]+)"'
+              )
+
+              if ($match.Success) {
+                return $match.Groups[1].Value
+              }
             }
+
             return $null
           }
 
-          $currentVersion = Get-CargoVersion (Get-Content -LiteralPath Cargo.toml -Raw)
-          if (-not $currentVersion) { throw 'Cargo.toml version was not found' }
+          $version = Get-CargoVersion (
+            Get-Content -LiteralPath Cargo.toml -Raw
+          )
 
-          $before = '${{ github.event.before }}'
-          $changed = $true
-          if ($before -and $before -notmatch '^0+$') {
-            $previousLines = & git show "${before}:Cargo.toml"
-            if ($LASTEXITCODE -ne 0) { throw "Could not read Cargo.toml at $before" }
-            $previousVersion = Get-CargoVersion ($previousLines -join "`n")
-            if (-not $previousVersion) { throw 'Previous Cargo.toml version was not found' }
-            $changed = $previousVersion -ne $currentVersion
-            Write-Host "Version: $previousVersion -> $currentVersion"
+          if (-not $version) {
+            throw 'Cargo.toml version was not found'
           }
 
-          "changed=$($changed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          "version=$currentVersion" >> $env:GITHUB_OUTPUT
-          "tag=v$currentVersion" >> $env:GITHUB_OUTPUT
+          $tag = "v$version"
+
+          & gh release view $tag *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            $release = 'false'
+            Write-Host "Release $tag already exists."
+          }
+          else {
+            $release = 'true'
+            Write-Host "Release $tag does not exist. Creating release."
+          }
+
+          "changed=$release" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
 
       - name: Set up Node.js
         if: steps.version.outputs.changed == 'true'
