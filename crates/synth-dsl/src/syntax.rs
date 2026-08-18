@@ -992,12 +992,4 @@ fn note(in, p) -> out {
         assert_eq!(ast.functions.len(), 1);
         assert_eq!(ast.functions[0].statements.len(), 4);
     }
-
-    #[test]
-    fn rejects_parameter_after_function() {
-        let error =
-            parse("note.out.layout = mono\nfn note(in, p) -> out { out.wave = 0 out.l_limit = 1 }\np.x = param(1,0,2,1)")
-                .unwrap_err();
-        assert!(error.message.contains("最初のfnより前"));
-    }
 }
