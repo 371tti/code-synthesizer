@@ -1,20 +1,20 @@
-name: Release
+name: Release (v2)
 
 on:
   push:
     branches:
-      - main
-      - master
+      - v2
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-v2
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  BIN_NAME: wk-371tti-net
 
 jobs:
   plan:
@@ -24,7 +24,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      should_release: ${{ steps.release.outputs.should_release }}
+      should_release: ${{ steps.check.outputs.should_release }}
 
     steps:
       - name: Checkout
@@ -32,176 +32,143 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Read version
         id: version
         shell: bash
         run: |
-          set -euo pipefail
-
-          version="$(
-            cargo metadata --no-deps --format-version 1 |
-            jq -r '.packages[] | select(.name == "synth-vst3") | .version'
-          )"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
 
           if [ -z "$version" ] || [ "$version" = "null" ]; then
-            echo "Could not determine synth-vst3 version"
+            echo "Could not read version"
             exit 1
           fi
 
-          tag="v$version"
-
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
           echo "Version: $version"
-          echo "Tag: $tag"
 
-      - name: Check GitHub Release
-        id: release
+      - name: Check existing release
+        id: check
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-
           tag="${{ steps.version.outputs.tag }}"
 
-          if gh release view "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            >/dev/null 2>&1
-          then
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $tag already exists -> skip"
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Release $tag does not exist -> release"
+            echo "Release $tag does not exist -> build"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  release:
-    name: Build and release
+  build:
+    name: Build ${{ matrix.artifact_name }}
     needs: plan
-
     if: needs.plan.outputs.should_release == 'true'
 
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            artifact_name: wk-371tti-net-linux-x86_64
+            bin_ext: ""
+
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: wk-371tti-net-windows-x86_64
+            bin_ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           submodules: recursive
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          targets: ${{ matrix.rust_target }}
 
-      - name: Set up Rust
-        shell: pwsh
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.rust_target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rust_target }}-
+
+      - name: Build
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup component add clippy
+          cargo build --release --target "${{ matrix.rust_target }}"
 
-      - name: Install UI dependencies
-        shell: pwsh
+      - name: Prepare artifact
+        shell: bash
         run: |
-          npm ci --prefix ui
+          mkdir -p dist
 
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+          src="target/${{ matrix.rust_target }}/release/${BIN_NAME}${{ matrix.bin_ext }}"
+          dst="dist/${BIN_NAME}${{ matrix.bin_ext }}"
 
-      - name: Test
-        shell: pwsh
+          cp "$src" "$dst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+
+  release:
+    name: Create GitHub Release
+    needs:
+      - plan
+      - build
+
+    if: needs.plan.outputs.should_release == 'true'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        shell: bash
         run: |
-          cargo test --workspace
+          mkdir -p release-assets
 
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+          find artifacts -type f -exec cp {} release-assets/ \;
 
-      - name: Clippy
-        shell: pwsh
-        run: |
-          cargo clippy --workspace --all-targets -- -D warnings
-
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
-      - name: Build VST3 bundle
-        shell: pwsh
-        run: |
-          .\build.ps1
-
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
-      - name: Package release asset
-        id: package
-        shell: pwsh
-        run: |
-          $version = '${{ needs.plan.outputs.version }}'
-
-          $bundle = 'target\bundled\Code Synthesizer.vst3'
-          $asset = "target\bundled\code-synthesizer-v$version-windows-x64.zip"
-
-          if (-not (Test-Path -LiteralPath $bundle)) {
-            throw "VST3 bundle not found: $bundle"
-          }
-
-          if (Test-Path -LiteralPath $asset) {
-            Remove-Item -LiteralPath $asset -Force
-          }
-
-          Compress-Archive `
-            -LiteralPath $bundle `
-            -DestinationPath $asset `
-            -Force
-
-          if (-not (Test-Path -LiteralPath $asset)) {
-            throw "Release archive was not created: $asset"
-          }
-
-          "asset=$asset" >> $env:GITHUB_OUTPUT
-
-          Write-Host "Created $asset"
+          ls -la release-assets
 
       - name: Create GitHub Release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $version = '${{ needs.plan.outputs.version }}'
-          $tag = '${{ needs.plan.outputs.tag }}'
-          $asset = '${{ steps.package.outputs.asset }}'
-
-          $arguments = @(
-            'release',
-            'create',
-            $tag,
-            $asset,
-            '--repo', $env:GITHUB_REPOSITORY,
-            '--target', $env:GITHUB_SHA,
-            '--title', "Code Synthesizer v$version",
-            '--generate-notes'
-          )
-
-          if ($version.Contains('-')) {
-            $arguments += '--prerelease'
-          }
-
-          & gh @arguments
-
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: ${{ needs.plan.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.plan.outputs.version, '-') }}
+          files: release-assets/*
