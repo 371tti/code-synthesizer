@@ -5,8 +5,6 @@
 
 数式ベースの独自 DSL で音を定義し、編集内容を演奏中に反映できる Windows x86_64 向け Rust 製 VST3 シンセサイザーです。
 
-README で定義していた最初の MVP は実装済みです。
-
 - VST3 Instrument / Stereo Output
 - 64 voice のポリフォニック SynthEngine
 - MIDI Note On/Off、CC、Pitch Bend、Pressure、Sustain、Program Change
