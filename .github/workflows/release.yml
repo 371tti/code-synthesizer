@@ -1,15 +1,15 @@
-name: Release (v2)
+name: Release
 
 on:
   push:
     branches:
-      - v2
+      - main
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-v2
+  group: release
   cancel-in-progress: false
 
 env:
